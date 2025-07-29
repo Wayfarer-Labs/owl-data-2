@@ -99,6 +99,7 @@ class VideoWorker:
                     }
                     print("Sent a payload")
                     self.socket.send_pyobj(payload)
+                    frame_buffer = []
 
 def main():
     parser = argparse.ArgumentParser(description='Video Loader Server')

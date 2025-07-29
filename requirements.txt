@@ -1,0 +1,7 @@
+decord
+av
+opencv-python
+numpy
+ray
+python-dotenv
+boto3

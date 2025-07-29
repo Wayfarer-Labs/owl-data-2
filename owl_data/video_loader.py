@@ -42,7 +42,10 @@ class VideoServerIterableDataset(IterableDataset):
 
     Shuffle buffer is used to fetch many videos then shuffle them.
     Note that each worker on server is looking at a single video, so randomness is determined by
-    how many separate workers there are. 
+    how many separate workers there are.
+
+    Returned objects are video tensors [b,n,c,h,w] and a list of dictionaries.
+    Dicts have info on where the videos came from. See above object documentation for details. 
     """
     def __init__(self, shuffle_buffer=64, num_workers=64):
         super().__init__()

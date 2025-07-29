@@ -19,8 +19,6 @@ def split_list(lst, n):
 
 @ray.remote(num_gpus=1)
 def process_jpegs_on_gpu(jpeg_paths, gpu_id):
-    # Set CUDA_VISIBLE_DEVICES for this worker
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     from owl_data.nn.depth_pipeline import DepthPipeline
 
     depth_pipeline = DepthPipeline()

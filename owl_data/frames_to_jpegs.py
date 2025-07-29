@@ -3,7 +3,6 @@ import argparse
 import ray
 from tqdm import tqdm
 from multiprocessing import cpu_count
-from local_data.video_reader import extract_frames
 import math
 
 def find_all_video_files(root_dir, suffix):

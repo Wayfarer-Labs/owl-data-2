@@ -5,3 +5,4 @@ numpy
 ray
 python-dotenv
 boto3
+zmq

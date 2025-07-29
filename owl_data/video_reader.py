@@ -57,36 +57,45 @@ def extract_frames(video_path, output_path, frame_skip):
     
     print(f"Extracted {saved_frame_index} frames from {video_path} to {output_path}")
 
+class VideoReader:
+    def __init__(self, video_path, frame_skip=1):
+        self.video_path = video_path
+        self.frame_skip = frame_skip
+        self.container = av.open(video_path)
+        self.video_stream = self.container.streams.video[0]
+        self._frame_iter = self.container.decode(self.video_stream)
+        self._frame_count = 0
+
+    def get_avg_fps(self):
+        pass
+
+    def __iter__(self):
+        self._frame_iter = self.container.decode(self.video_stream)
+        self._frame_count = 0
+        return self
+
+    def __next__(self):
+        """
+        Iterates over frames, returned array is HWC, RGB, uint8 np array
+        """
+        for frame in self._frame_iter:
+            if self._frame_count % (self.frame_skip + 1) == 0:
+                frame_array = frame.to_ndarray(format='rgb24')
+                self._frame_count += 1
+                return frame_array
+            self._frame_count += 1
+        raise StopIteration
+
+    def __del__(self):
+        try:
+            self.container.close()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
-    # Search for the first .mp4 file in the "datasets" folder
-    mp4_path = None
-    for root, dirs, files in os.walk("datasets"):
-        for file in files:
-            if file.lower().endswith(".mkv"):
-                mp4_path = os.path.join(root, file)
-                break
-        if mp4_path:
-            break
+    vid_path = "/mnt/data/shahbuland/video-proc-2/datasets/cod-yt/99-youtube video #KxYXtXBtpEE.mp4"
 
-    if mp4_path:
-        try:
-            container = av.open(mp4_path)
-            video_stream = container.streams.video[0]
-            frame_index = 0
-            target_frame = None
-            for frame in container.decode(video_stream):
-                if frame_index == 99:  # 100th frame (0-based index)
-                    frame_array = frame.to_ndarray(format='rgb24')
-                    pil_image = Image.fromarray(frame_array)
-                    pil_image.save("sample.jpg", "JPEG")
-                    print(f"Saved 100th frame from {mp4_path} to sample.jpg")
-                    break
-                frame_index += 1
-            container.close()
-            if frame_index < 99:
-                print(f"Video {mp4_path} has less than 100 frames.")
-        except Exception as e:
-            print(f"Error extracting 100th frame: {e}")
-    else:
-        print("No .mp4 files found in the 'datasets' directory.")
+    reader = VideoReader(vid_path)
+    for frame in reader:
+        print(frame.shape)
+        break

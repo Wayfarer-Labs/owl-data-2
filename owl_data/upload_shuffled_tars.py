@@ -9,6 +9,10 @@ import ray
 from multiprocessing import cpu_count
 from tqdm import tqdm
 
+from dotenv import load_dotenv
+load_dotenv()
+
+
 def find_jpg_and_depth_pairs(root_dir):
     """
     Walks root_dir and finds all .jpg files (not .depth.jpg), and for each, checks if a corresponding .depth.jpg exists.

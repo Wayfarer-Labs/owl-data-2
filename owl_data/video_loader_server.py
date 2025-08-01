@@ -28,7 +28,9 @@ class VideoWorker:
         known_fps = 30,
         queue_max = 2000,
         resize_to = 256,
-        sequential = False
+        sequential = False,
+        num_nodes = 1,
+        node_rank = 0,
     ):
         self.root_dir = root_dir
         self.suffix = suffix
@@ -50,6 +52,9 @@ class VideoWorker:
         self.sequential = sequential
         self.world_size = world_size
 
+        self.num_nodes = num_nodes
+        self.node_rank = node_rank
+
         self.video_paths = self.get_all_video_paths()
         if self.sequential:
             self.video_paths = iter(self.video_paths)
@@ -64,6 +69,18 @@ class VideoWorker:
             # Deterministically split the list among workers
             video_paths.sort()  # Ensure consistent order
             total = len(video_paths)
+
+            # Split among nodes
+            if self.num_nodes > 1:
+                per_node = total // self.num_nodes
+                remainder = total % self.num_nodes
+                start = self.node_rank * per_node + min(self.node_rank, remainder)
+                end = start + per_node + (1 if self.node_rank < remainder else 0)
+                video_paths = video_paths[start:end]
+
+            total = len(video_paths)
+
+            # Split among workers
             per_worker = total // self.world_size
             remainder = total % self.world_size
             start = self.rank * per_worker + min(self.rank, remainder)
@@ -144,6 +161,8 @@ def main():
     parser.add_argument('--suffix', type = str, default = '.mp4', help = 'Suffix of videos to load')
     parser.add_argument('--resize_to', type = int, nargs='+', default = 256, help = 'Square size or tuple (h w) to resize videos to')
     parser.add_argument('--sequential', action = 'store_true', help = 'Load all videos sequentially, as opposed to randomly')
+    parser.add_argument('--num_nodes', type = int, default = 1, help = 'Number of nodes being used')
+    parser.add_argument('--node_rank', type = int, default = 0, help = 'Node rank among all nodes')
     args = parser.parse_args()
 
     # If resize_to is a list of length 1, make it an int; if length 2, make it a tuple
@@ -157,7 +176,7 @@ def main():
     else:
         resize_to = args.resize_to
 
-    workers = [VideoWorker.remote(args.root_dir, i, args.num_workers, args.suffix, args.frame_skip, args.n_frames, args.known_fps, args.queue_max, resize_to, args.sequential) for i in range(args.num_workers)]
+    workers = [VideoWorker.remote(args.root_dir, i, args.num_workers, args.suffix, args.frame_skip, args.n_frames, args.known_fps, args.queue_max, resize_to, args.sequential, args.num_nodes, args.node_rank) for i in range(args.num_workers)]
     ray.get([worker.run.remote() for worker in workers])
 
 if __name__ == "__main__":

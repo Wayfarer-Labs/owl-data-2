@@ -14,7 +14,7 @@ def find_all_tensor_files(root_dir: str) -> List[str]:
     tensor_files = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for filename in filenames:
-            if filename.endswith('_rgblatent.pt'):
+            if filename.endswith('_rgb.pt'):
                 tensor_files.append(os.path.join(dirpath, filename))
     return sorted(tensor_files)
 
@@ -50,12 +50,12 @@ def setup_qwen_model():
         print("Loading Qwen2.5-VL model...")
         
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            "Qwen/Qwen2.5-VL-7B-Instruct", 
+            "Qwen/Qwen2.5-VL-3B-Instruct", 
             torch_dtype=torch.bfloat16,
             device_map="auto"
         )
         
-        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
         
         return model, processor, process_vision_info
         
@@ -74,11 +74,11 @@ def setup_qwen_model():
         
         print("Loading Qwen2.5-VL model...")
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            "Qwen/Qwen2.5-VL-7B-Instruct", 
+            "Qwen/Qwen2.5-VL-3B-Instruct", 
             torch_dtype=torch.bfloat16,
             device_map="auto"
         )
-        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
         
         return model, processor, process_vision_info
     except Exception as e:
@@ -176,7 +176,7 @@ class CaptionWorker:
     
     def process_tensor_file(self, tensor_path: str, overwrite: bool = False) -> Dict:
         try:
-            base_path = tensor_path.replace('_rgblatent.pt', '')
+            base_path = tensor_path.replace('_rgb.pt', '')
             caption_path = base_path + '_captions.txt'
             
             if os.path.exists(caption_path) and not overwrite:
@@ -238,9 +238,9 @@ class CaptionWorker:
             }
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate captions from tensor files using Qwen2.5-VL sliding window approach")
+    parser = argparse.ArgumentParser(description="Generate captions from tensor files using Qwen2.5-VL-3B sliding window approach")
     parser.add_argument("--input_dir", type=str, required=True, 
-                       help="Directory containing tensor files (*_rgblatent.pt)")
+                       help="Directory containing tensor files (*_rgb.pt)")
     parser.add_argument("--kernel_size", type=int, default=5,
                        help="Number of frames in each window (default: 5)")
     parser.add_argument("--dilation", type=int, default=2,
@@ -311,7 +311,7 @@ def main():
                 )
                 result_refs.append(ref)
     
-    print("Processing tensor files with Qwen2.5-VL...")
+    print("Processing tensor files with Qwen2.5-VL-3B...")
     results = ray.get(result_refs)
     
     successful = sum(1 for r in results if r['status'] == 'success')

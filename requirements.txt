@@ -6,3 +6,8 @@ ray
 python-dotenv
 boto3
 zmq
+torch
+transformers
+accelerate
+qwen-vl-utils[decord]==0.0.8
+Pillow

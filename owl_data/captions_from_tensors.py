@@ -9,6 +9,7 @@ import json
 import tempfile
 from PIL import Image
 import numpy as np
+import datetime
 
 def find_all_tensor_files(root_dir: str) -> List[str]:
     tensor_files = []
@@ -46,16 +47,27 @@ def setup_qwen_model():
     try:
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
         from qwen_vl_utils import process_vision_info
+        import os
+        
+        # Define cache directory
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints", "qwen")
+        os.makedirs(cache_dir, exist_ok=True)
         
         print("Loading Qwen2.5-VL model...")
         
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2.5-VL-3B-Instruct", 
             torch_dtype=torch.bfloat16,
-            device_map="auto"
+            device_map="auto",
+            cache_dir=cache_dir,
+            local_files_only=os.path.exists(os.path.join(cache_dir, "Qwen2.5-VL-3B-Instruct"))
         )
         
-        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        processor = AutoProcessor.from_pretrained(
+            "Qwen/Qwen2.5-VL-3B-Instruct",
+            cache_dir=cache_dir,
+            local_files_only=os.path.exists(os.path.join(cache_dir, "Qwen2.5-VL-3B-Instruct"))
+        )
         
         return model, processor, process_vision_info
         
@@ -71,14 +83,23 @@ def setup_qwen_model():
         
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
         from qwen_vl_utils import process_vision_info
+        import os
+        
+        # Define cache directory
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints", "qwen")
+        os.makedirs(cache_dir, exist_ok=True)
         
         print("Loading Qwen2.5-VL model...")
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2.5-VL-3B-Instruct", 
             torch_dtype=torch.bfloat16,
-            device_map="auto"
+            device_map="auto",
+            cache_dir=cache_dir
         )
-        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        processor = AutoProcessor.from_pretrained(
+            "Qwen/Qwen2.5-VL-3B-Instruct",
+            cache_dir=cache_dir
+        )
         
         return model, processor, process_vision_info
     except Exception as e:
@@ -89,9 +110,13 @@ def tensor_to_images(frames: torch.Tensor) -> List[Image.Image]:
     images = []
     
     for i in range(frames.shape[0]):
-        frame = frames[i]
+        frame = frames[i]  # [H, W, C] or [C, H, W]
         
-        frame_np = frame.permute(1, 2, 0).numpy()
+        # Check if we need to permute
+        if frame.shape[-1] != 3:  # If last dim is not 3, assume [C, H, W]
+            frame = frame.permute(1, 2, 0)  # Convert to [H, W, C]
+        
+        frame_np = frame.numpy()
         
         if frame_np.max() <= 1.0:
             frame_np = (frame_np * 255).astype(np.uint8)
@@ -177,7 +202,7 @@ class CaptionWorker:
     def process_tensor_file(self, tensor_path: str, overwrite: bool = False) -> Dict:
         try:
             base_path = tensor_path.replace('_rgb.pt', '')
-            caption_path = base_path + '_captions.txt'
+            caption_path = base_path + '_captions.json'
             
             if os.path.exists(caption_path) and not overwrite:
                 return {
@@ -212,16 +237,33 @@ class CaptionWorker:
                     'reason': 'No valid windows created'
                 }
             
-            captions = []
+            captions_data = {
+                "metadata": {
+                    "video_name": os.path.basename(tensor_path).replace('_rgb.pt', ''),
+                    "total_frames": num_frames,
+                    "kernel_size": self.kernel_size,
+                    "dilation": self.dilation,
+                    "stride": self.stride,
+                    "prompt_template": self.prompt_template,
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "model": "Qwen2.5-VL-3B"
+                },
+                "windows": []
+            }
+            
             for start_frame, end_frame, frame_indices in windows:
                 window_frames = tensor[frame_indices]
                 caption = generate_caption_for_window(window_frames, self.model, self.processor, self.process_vision_info, self.prompt_template)
-                caption_line = f"{start_frame} {end_frame} {caption}"
-                captions.append(caption_line)
+                window_data = {
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "frame_indices": frame_indices,
+                    "caption": caption
+                }
+                captions_data["windows"].append(window_data)
             
             with open(caption_path, 'w') as f:
-                for caption_line in captions:
-                    f.write(caption_line + '\n')
+                json.dump(captions_data, f, indent=2)
             
             return {
                 'tensor_path': tensor_path,

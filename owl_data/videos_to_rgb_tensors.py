@@ -58,7 +58,7 @@ def extract_frames_from_video(video_path: str, frame_skip: int = 1, max_frames: 
         return None
 
 @ray.remote
-def process_video_to_tensor(video_path: str, output_dir: str, frame_skip: int, max_frames: int, resize_to: Tuple[int, int]) -> Dict:
+def process_video_to_tensor(video_path: str, output_dir: str, frame_skip: int, max_frames: int, resize_to: Tuple[int, int], overwrite: bool) -> Dict:
     try:
         # Extract frames
         frames_tensor = extract_frames_from_video(video_path, frame_skip, max_frames, resize_to)
@@ -70,10 +70,26 @@ def process_video_to_tensor(video_path: str, output_dir: str, frame_skip: int, m
                 'reason': 'Failed to extract frames'
             }
         
-        # Create output filename
+        # Create output filename with numbered format
         video_name = os.path.splitext(os.path.basename(video_path))[0]
-        output_filename = f"{video_name}_rgb.pt"
-        output_path = os.path.join(output_dir, output_filename)
+        
+        # Create splits directory if it doesn't exist
+        splits_dir = os.path.join(output_dir, "splits")
+        os.makedirs(splits_dir, exist_ok=True)
+        
+        # Use numbered filename (e.g., 00000000_caption_rgb.pt)
+        # For now, we'll use a simple counter, but this could be enhanced
+        existing_files = len([f for f in os.listdir(splits_dir) if f.endswith('_caption_rgb.pt')])
+        output_filename = f"{existing_files:08d}_caption_rgb.pt"
+        output_path = os.path.join(splits_dir, output_filename)
+        
+        # Check if file already exists and overwrite is false
+        if os.path.exists(output_path) and not overwrite:
+            return {
+                'video_path': video_path,
+                'status': 'skipped',
+                'reason': f'Tensor file already exists: {output_filename}'
+            }
         
         # Save tensor
         torch.save(frames_tensor, output_path)
@@ -113,6 +129,8 @@ def main():
                        help="Number of nodes being used (default: 1)")
     parser.add_argument("--node_rank", type=int, default=0,
                        help="Node rank among all nodes (default: 0)")
+    parser.add_argument("--overwrite", action="store_true",
+                       help="Overwrite existing tensor files")
     
     args = parser.parse_args()
     
@@ -163,7 +181,8 @@ def main():
                     args.output_dir,
                     args.frame_skip,
                     args.max_frames,
-                    tuple(args.resize_to)
+                    tuple(args.resize_to),
+                    args.overwrite
                 )
                 result_refs.append(ref)
     
@@ -172,11 +191,13 @@ def main():
     
     # Print summary
     successful = sum(1 for r in results if r['status'] == 'success')
+    skipped = sum(1 for r in results if r['status'] == 'skipped')
     errors = sum(1 for r in results if r['status'] == 'error')
     
     print(f"\nConversion complete!")
     print(f"Node {args.node_rank} summary:")
     print(f"  Successful: {successful}")
+    print(f"  Skipped: {skipped}")
     print(f"  Errors: {errors}")
     
     if successful > 0:
@@ -185,6 +206,9 @@ def main():
         for result in results[:3]:
             if result['status'] == 'success':
                 print(f"  {os.path.basename(result['output_path'])} - Shape: {result['tensor_shape']}")
+    
+    if skipped > 0:
+        print(f"\nSkipped {skipped} files (already exist). Use --overwrite to force regeneration.")
     
     if errors > 0:
         print("\nErrors:")

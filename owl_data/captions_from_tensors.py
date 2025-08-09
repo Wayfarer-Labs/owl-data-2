@@ -11,11 +11,39 @@ from PIL import Image
 import numpy as np
 import datetime
 
+# Default prompt template for video captioning
+# You can customize this prompt to focus on specific aspects of the video
+# For example, you could modify it to focus on:
+# - Game-specific events and mechanics
+# - Character interactions and behaviors  
+# - UI elements and interface changes
+# - Audio cues and sound events
+DEFAULT_PROMPT_TEMPLATE = """
+Analyze this video sequence and provide a detailed description of what is happening in the world/environment. 
+
+Focus on:
+- Environmental events and world state changes
+- Objects, structures, and their interactions
+- Atmospheric conditions and lighting
+- Movement and dynamics in the scene
+- Spatial relationships and positioning
+
+Important guidelines:
+- Describe what is happening in the world, NOT what the player/character is doing
+- Focus on observable events and environmental changes
+- Be specific about locations, objects, and their states
+- Note any significant changes between frames
+- Avoid subjective interpretations or game-specific terminology
+
+Provide a clear, objective description of the visual content and environmental events shown in this video sequence.
+"""
+
 def find_all_tensor_files(root_dir: str) -> List[str]:
     tensor_files = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for filename in filenames:
-            if filename.endswith('_rgb.pt'):
+            # Support both our caption tensors and existing 1x tensors
+            if filename.endswith('_caption_rgb.pt') or filename.endswith('_rgb.pt'):
                 tensor_files.append(os.path.join(dirpath, filename))
     return sorted(tensor_files)
 
@@ -192,25 +220,51 @@ def generate_caption_for_window(frames: torch.Tensor, vlm_model, processor, proc
 
 @ray.remote(num_gpus=1)
 class CaptionWorker:
-    def __init__(self, kernel_size, dilation, stride, prompt_template):
+    def __init__(self, kernel_size, dilation, stride, prompt_template, verbose: bool = False):
         self.kernel_size = kernel_size
         self.dilation = dilation
         self.stride = stride
         self.prompt_template = prompt_template
+        self.verbose = verbose
         self.model, self.processor, self.process_vision_info = setup_qwen_model()
     
     def process_tensor_file(self, tensor_path: str, overwrite: bool = False) -> Dict:
         try:
-            base_path = tensor_path.replace('_rgb.pt', '')
-            caption_path = base_path + '_captions.json'
+            # Extract the split directory and filename
+            tensor_dir = os.path.dirname(tensor_path)
+            tensor_filename = os.path.basename(tensor_path)
+            
+            # Parse the numbered filename (e.g., "00000000_rgb.pt" -> "00000000")
+            if '_rgb.pt' in tensor_filename:
+                base_number = tensor_filename.replace('_rgb.pt', '')
+            elif '_caption_rgb.pt' in tensor_filename:
+                base_number = tensor_filename.replace('_caption_rgb.pt', '')
+            else:
+                return {
+                    'tensor_path': tensor_path,
+                    'status': 'error',
+                    'reason': f'Unexpected tensor filename format: {tensor_filename}'
+                }
+            
+            # Extract just the number part (e.g., "00000000_caption" -> "00000000")
+            if '_caption' in base_number:
+                base_number = base_number.replace('_caption', '')
+            
+            # Create caption filename in the same directory
+            caption_filename = f"{base_number}_captions.json"
+            caption_path = os.path.join(tensor_dir, caption_filename)
             
             if os.path.exists(caption_path) and not overwrite:
+                if getattr(self, "verbose", False):
+                    print(f"SKIP: {caption_path} (exists)")
                 return {
                     'tensor_path': tensor_path,
                     'status': 'skipped',
                     'reason': 'Caption file already exists'
                 }
             
+            if getattr(self, "verbose", False):
+                print(f"PROCESS: {tensor_path} -> {caption_path}")
             tensor = load_tensor_file(tensor_path)
             if tensor is None:
                 return {
@@ -239,7 +293,7 @@ class CaptionWorker:
             
             captions_data = {
                 "metadata": {
-                    "video_name": os.path.basename(tensor_path).replace('_rgb.pt', ''),
+                    "video_name": base_number,
                     "total_frames": num_frames,
                     "kernel_size": self.kernel_size,
                     "dilation": self.dilation,
@@ -264,6 +318,8 @@ class CaptionWorker:
             
             with open(caption_path, 'w') as f:
                 json.dump(captions_data, f, indent=2)
+            if getattr(self, "verbose", False):
+                print(f"WROTE: {caption_path} (windows={len(windows)})")
             
             return {
                 'tensor_path': tensor_path,
@@ -290,16 +346,20 @@ def main():
     parser.add_argument("--stride", type=int, default=3,
                        help="Stride for sliding window (default: 3)")
     parser.add_argument("--prompt_template", type=str, 
-                       default="Describe what is happening in this video sequence. Focus on environmental events and world state, not player actions.",
+                       default=DEFAULT_PROMPT_TEMPLATE,
                        help="Template for captioning prompt")
     parser.add_argument("--num_gpus", type=int, default=8,
                        help="Number of GPUs to use (default: 8)")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Enable verbose per-file logging (SKIP/PROCESS/WROTE)")
     parser.add_argument("--overwrite", action="store_true",
                        help="Overwrite existing caption files")
     parser.add_argument("--num_nodes", type=int, default=1,
                        help="Number of nodes being used (default: 1)")
     parser.add_argument("--node_rank", type=int, default=0,
                        help="Node rank among all nodes (default: 0)")
+    parser.add_argument("--max_files", type=int, default=0,
+                       help="Limit the number of tensor files to process (0 means no limit)")
     
     args = parser.parse_args()
     
@@ -324,6 +384,11 @@ def main():
         node_files = tensor_files
         print(f"Single node: processing {len(node_files)} files")
     
+    # Optionally limit how many files to process
+    if args.max_files > 0:
+        node_files = node_files[:args.max_files]
+        print(f"Limiting to first {len(node_files)} files due to --max_files={args.max_files}")
+    
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
     
     num_gpus = args.num_gpus
@@ -339,7 +404,8 @@ def main():
             args.kernel_size,
             args.dilation,
             args.stride,
-            args.prompt_template
+            args.prompt_template,
+            args.verbose,
         )
         workers.append(worker)
     

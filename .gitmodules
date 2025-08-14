@@ -4,3 +4,7 @@
 [submodule "owl-vaes"]
 	path = owl-vaes
 	url = https://github.com/wayfarer-labs/owl-vaes
+[submodule "Video-Depth-Anything"]
+	path = Video-Depth-Anything
+	url = https://github.com/DepthAnything/Video-Depth-Anything.git
+	branch = main

@@ -8,3 +8,7 @@
 	path = Video-Depth-Anything
 	url = https://github.com/DepthAnything/Video-Depth-Anything.git
 	branch = main
+[submodule "MoGe"]
+	path = MoGe
+	url = git@github.com:microsoft/MoGe.git
+	branch = main

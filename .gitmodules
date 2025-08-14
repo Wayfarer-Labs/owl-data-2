@@ -12,3 +12,7 @@
 	path = MoGe
 	url = git@github.com:microsoft/MoGe.git
 	branch = main
+[submodule "mmpose"]
+	path = mmpose
+	url = git@github.com:open-mmlab/mmpose.git
+	branch = main

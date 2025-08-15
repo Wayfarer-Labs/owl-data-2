@@ -16,7 +16,7 @@
 	path = mmpose
 	url = git@github.com:open-mmlab/mmpose.git
 	branch = main
-[submodule "SAM"]
-	path = SAM
+[submodule "segment-anything"]
+	path = segment-anything
 	url = git@github.com:facebookresearch/segment-anything.git
 	branch = main

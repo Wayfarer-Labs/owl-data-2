@@ -355,10 +355,19 @@ if __name__ == '__main__':
         keypoint_threshold = 0.0
     )
 
-    base_path = os.path.join(os.path.abspath(__file__), '../temp_files')
-    FILENAME = None
-    VIDEO_DIR = None
-    VIDEO_NAME = None
+    BASE_PATH = os.path.join(os.path.abspath(__file__), '../temp_files')
+    VIDEO_DIR = os.path.join(os.path.abspath(__file__), '../temp_files')
+    VIDEO_NAME = 'to_send.mp4'
     VIDEO_FPS = None
 
-    depth_pose_pipeline.run_pipeline_moge()
+    depth_pose_pipeline.run_video_moge(
+        frame_path = BASE_PATH,
+        video_dir = VIDEO_DIR,
+        video_name = VIDEO_NAME
+    )
+
+    depth_pose_pipeline.run_video(
+        frame_path = BASE_PATH,
+        video_dir = VIDEO_DIR,
+        video_name = VIDEO_NAME
+    )

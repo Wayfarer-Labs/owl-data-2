@@ -4,7 +4,8 @@ from .nn.sam_keypoint_pipeline import SegmentationPipeline
 from .nn.moge_points_intrinsics_pipeline import MoGePointsIntrinsicsPipeline
 import torch
 import os
-import numpy as np
+import numpy as np 
+from tqdm import tqdm
 
 class DepthPosePipeline:
 
@@ -205,7 +206,7 @@ class DepthPosePipeline:
         
         return coord_depth_tensor
 
-    def run_pipeline_moge(self, frame_filename:str, video_dir: str, video_name:str, input_size: int, video_fps: int):
+    def run_pipeline_moge(self, frame_filename:str, video_dir: str, video_name:str, video_fps: int):
         frames = torch.load(frame_filename)
         frame_idx = frame_filename.split('_')[0]
 
@@ -262,7 +263,7 @@ class DepthPosePipeline:
         # Save the full 4-channel coord_depth_map
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
-    def run_pipeline(self, frame_filename:str, video_dir: str, video_name:str, input_size: int, video_fps: int):
+    def run_pipeline(self, frame_filename:str, video_dir: str, video_name:str, video_fps: int):
         frames = torch.load(frame_filename)
         frame_idx = frame_filename.split('_')[0]
        
@@ -282,7 +283,8 @@ class DepthPosePipeline:
                                 frames=frames,
                                 video_dir=video_dir,
                                 video_name=video_name,
-                                input_size=input_size,
+                                target_width = frames[0].shape[1],
+                                target_height = frames[0].shape[2],
                                 video_fps = video_fps
                             )
 
@@ -326,6 +328,23 @@ class DepthPosePipeline:
         # Save the full 4-channel coord_depth_map
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
+    def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+        for frame_file in tqdm(os.listdir(frame_path)):
+            self.run_pipeline(
+                frame_file=frame_file,
+                video_dir= video_dir,
+                video_name = video_name,
+                video_fps = video_fps
+            )
+    
+    def run_video_moge(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+        for frame_file in tqdm(os.listdir(frame_path)):
+            self.run_pipeline_moge(
+                frame_file=frame_file,
+                video_dir= video_dir,
+                video_name = video_name,
+                video_fps = video_fps
+            )
 
 if __name__ == '__main__':
     depth_pose_pipeline = DepthPosePipeline(
@@ -335,3 +354,11 @@ if __name__ == '__main__':
         save_video_depth = True,
         keypoint_threshold = 0.0
     )
+
+    base_path = os.path.join(os.path.abspath(__file__), '../temp_files')
+    FILENAME = None
+    VIDEO_DIR = None
+    VIDEO_NAME = None
+    VIDEO_FPS = None
+
+    depth_pose_pipeline.run_pipeline_moge()

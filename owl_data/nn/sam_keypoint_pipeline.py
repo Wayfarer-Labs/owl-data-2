@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 import sys
@@ -5,10 +6,19 @@ sys.path.append('segment-anything')
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 torch.backends.cuda.enable_flash_sdp(True)
 
+
+
 class SegmentationPipeline:
-    def __init__(self, model_name: str = 'vit_h', ckpt: str, score_threshold:float=0.0):
-        sam = sam_model_registry[model_name](checkpoint=ckpt)
-        self.sam_mask_generator = SamAutomaticMaskGenerator(sam)
+    def __init__(self, model_name: str = 'vit_h', score_threshold:float=0.0):
+        sam_model_checkpoints = {
+            'vit_h': 'sam_vit_h.pth'
+        }
+        base_ckpt_path = os.path.join(os.path.abspath(__file__), '..','..','segment-anything','ckpts')
+        model_ckpt = os.path.join(base_ckpt_path, sam_model_checkpoints[model_name])
+
+        self.sam_mask_generator = SamAutomaticMaskGenerator(
+            sam_model_registry[model_name](checkpoint=model_ckpt)
+        )
         self.score_threshold = score_threshold
     
     def process_video(self, frames: torch.Tensor):

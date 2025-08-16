@@ -179,7 +179,7 @@ class MoGePointsIntrinsicsPipeline:
             except Exception as cv_error:
                 print(f"[ERROR] OpenCV fallback failed: {cv_error}")
 
-    def __call__(self, frames: torch.Tensor, video_dir: str, video_name: str, video_fps: int) -> dict:
+    def __call__(self, frames: torch.Tensor, video_dir: str, video_name: str) -> dict:
         output = self.process_frames(frames)
         
         if self.save_depth_video:

@@ -42,10 +42,17 @@ class VideoDepthPipeline:
         
         return frames_np
     
-    def process_video(self, frames: torch.Tensor, video_dir: str, video_name:str, target_width: int, target_height:int, video_fps: int):
+    def process_video(self, frames: torch.Tensor, video_dir: str, video_name:str, target_width: int, target_height:int, saved_fps: int):
         # Convert tensor to format expected by infer_video_depth
         frames_np = self.convert_tensor_to_frames(frames)
-        depths, fps = self.video_depth_anything.infer_video_depth(frames_np, video_fps, target_width=target_width, target_height=target_height, device=self.device, fp32=True)
+        depths, fps = self.video_depth_anything.infer_video_depth(
+            frames = frames_np, 
+            target_fps = saved_fps, 
+            target_width=target_width, 
+            target_height=target_height, 
+            device=self.device, 
+            fp32=True
+        )
         
         #Convert depths back to tensors
         depths = torch.from_numpy(depths)

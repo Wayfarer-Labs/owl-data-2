@@ -206,7 +206,7 @@ class DepthPosePipeline:
         
         return coord_depth_tensor
 
-    def run_pipeline_moge(self, frame_filename:str, video_dir: str, video_name:str, video_fps: int):
+    def run_pipeline_moge(self, frame_filename:str, video_dir: str, video_name:str):
         frames = torch.load(frame_filename)
         frame_idx = frame_filename.split('_')[0]
 
@@ -219,9 +219,8 @@ class DepthPosePipeline:
         moge_output = self.moge_pipeline(
                                         frames=frames,
                                         video_dir=video_dir,
-                                        video_name=video_name,
-                                        video_fps = video_fps
-                    )
+                                        video_name=video_name
+                                        )
         
         full_depth_path = os.path.join(video_dir, 'full_depth_splits')
         full_seg_path = os.path.join(video_dir, 'full_seg_splits')
@@ -263,7 +262,7 @@ class DepthPosePipeline:
         # Save the full 4-channel coord_depth_map
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
-    def run_pipeline(self, frame_filename:str, video_dir: str, video_name:str, video_fps: int):
+    def run_pipeline(self, frame_filename:str, video_dir: str, video_name:str, saved_fps: int):
         frames = torch.load(frame_filename)
         frame_idx = frame_filename.split('_')[0]
        
@@ -271,9 +270,8 @@ class DepthPosePipeline:
         estimated_intrinsicts = self.moge_pipeline(
                                         frames=frames[0],
                                         video_dir=video_dir,
-                                        video_name=video_name,
-                                        video_fps = video_fps
-                                )['intrinsics']
+                                        video_name=video_name
+                                        )['intrinsics']
         #Step 1: extract the RTM pose pixels for humans and animals in the frames
         separate_entity_keypoints, aggregated_keypoints = self.pose_keypoint_pipeline(frames=frames)
         #Step 2: extract the visual segmentations using SAM + compute keypoints for segment blobs
@@ -285,7 +283,7 @@ class DepthPosePipeline:
                                 video_name=video_name,
                                 target_width = frames[0].shape[1],
                                 target_height = frames[0].shape[2],
-                                video_fps = video_fps
+                                saved_fps = saved_fps
                             )
 
         full_depth_path = os.path.join(video_dir, 'full_depth_splits')
@@ -328,22 +326,21 @@ class DepthPosePipeline:
         # Save the full 4-channel coord_depth_map
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
-    def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+    def run_video(self, frame_path:str, video_dir:str, video_name:str, saved_fps:int):
         for frame_file in tqdm(os.listdir(frame_path)):
             self.run_pipeline(
                 frame_file=frame_file,
                 video_dir= video_dir,
                 video_name = video_name,
-                video_fps = video_fps
+                saved_fps = saved_fps
             )
     
-    def run_video_moge(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+    def run_video_moge(self, frame_path:str, video_dir:str, video_name:str, saved_fps:int):
         for frame_file in tqdm(os.listdir(frame_path)):
             self.run_pipeline_moge(
                 frame_file=frame_file,
                 video_dir= video_dir,
                 video_name = video_name,
-                video_fps = video_fps
             )
 
 if __name__ == '__main__':
@@ -355,19 +352,21 @@ if __name__ == '__main__':
         keypoint_threshold = 0.0
     )
 
-    BASE_PATH = os.path.join(os.path.abspath(__file__), '../temp_files')
+    BASE_PATH = os.path.join(os.path.abspath(__file__), '../temp_files/splits')
     VIDEO_DIR = os.path.join(os.path.abspath(__file__), '../temp_files')
     VIDEO_NAME = 'to_send.mp4'
-    VIDEO_FPS = None
+    SAVED_FPS = 30 #TODO: set fps for depth video
 
     depth_pose_pipeline.run_video_moge(
         frame_path = BASE_PATH,
         video_dir = VIDEO_DIR,
-        video_name = VIDEO_NAME
+        video_name = VIDEO_NAME,
+        saved_fps = SAVED_FPS
     )
 
     depth_pose_pipeline.run_video(
         frame_path = BASE_PATH,
         video_dir = VIDEO_DIR,
-        video_name = VIDEO_NAME
+        video_name = VIDEO_NAME,
+        saved_fps = SAVED_FPS
     )

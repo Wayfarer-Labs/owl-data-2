@@ -8,7 +8,7 @@ import numpy as np
 
 class DepthPosePipeline:
 
-    def __init__(self, depth_encoder:str='vitl', segmentation_model:str = 'vit_h', ckpt:str, save_video_depth:bool=False, keypoint_threshold:float=0.3, segmentation_threshold:float=0.5):
+    def __init__(self, depth_encoder:str='vitl', segmentation_model:str = 'vit_h', save_video_depth:bool=False, keypoint_threshold:float=0.3, segmentation_threshold:float=0.5):
         self.video_depth_pipeline = VideoDepthPipeline(
                                     depth_encoder = depth_encoder,
                                     save_video_depth = save_video_depth
@@ -19,7 +19,6 @@ class DepthPosePipeline:
         
         self.segmentation_pipeline = SegmentationPipeline(
                                     model_name = segmentation_model,
-                                    ckpt = ckpt,
                                     score_threshold = segmentation_threshold
                                 )
         
@@ -326,4 +325,13 @@ class DepthPosePipeline:
         torch.save(torch.stack(all_keypoint_depths), os.path.join(keypoint_depth_path, f'{frame_idx}_kpdepth.pt'))
         # Save the full 4-channel coord_depth_map
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
-        
+
+
+if __name__ == '__main__':
+    depth_pose_pipeline = DepthPosePipeline(
+        depth_encoder='vitl', 
+        segmentation_model='vit_h',
+        segmentation_threshold = 0.0,
+        save_video_depth = True,
+        keypoint_threshold = 0.0
+    )

@@ -179,6 +179,11 @@ class MoGePointsIntrinsicsPipeline:
             except Exception as cv_error:
                 print(f"[ERROR] OpenCV fallback failed: {cv_error}")
 
+    def normalize_scale(self, tensor:torch.Tensor):
+        max_finite = tensor[torch.isfinite(tensor)].max()
+        tensor = torch.where(torch.isinf(tensor), max_finite, tensor)
+        return tensor
+
     def __call__(self, frames: torch.Tensor, video_dir: str, video_name: str) -> dict:
         output = self.process_frames(frames)
         
@@ -191,7 +196,7 @@ class MoGePointsIntrinsicsPipeline:
         else:
             # Aggregate outputs from all frames
             return {
-                'points': [out.get('points', None) for out in output], 
-                'depth': [out.get('depth', None) for out in output], 
-                'intrinsics': [out.get('intrinsics') for out in output]
+                'points': [self.normalize_scale(out.get('points', None)) for out in output], 
+                'depth': [self.normalize_scale(out.get('depth', None)) for out in output], 
+                'intrinsics': [out.get('intrinsics', None) for out in output]
             }

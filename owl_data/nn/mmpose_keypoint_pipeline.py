@@ -4,7 +4,14 @@ import torch
 import numpy as np
 from torch.nn import functional as F
 import sys
-from typing import Optional, Tuple, List
+import ssl
+sys.path.append('mmpose')
+from typing import Optional, Tuple, List, Dict
+import pdb
+from tqdm import tqdm
+
+# Fix SSL certificate verification error
+ssl._create_default_https_context = ssl._create_unverified_context
 
 torch.backends.cuda.enable_flash_sdp(True)
 from mmpose.apis import MMPoseInferencer
@@ -18,8 +25,7 @@ class PoseKeypointPipeline:
             keypoint_threshold: Minimum confidence threshold for keypoints
         """
         self.human_pose_model = MMPoseInferencer(
-            pose2d='rtmpose-m_8xb256-420e_coco-256x192', 
-            det_model='rtmdet_tiny_8xb32-300e_coco'
+            pose2d='rtmpose-m_8xb256-420e_coco-256x192'
         )
         # Use the animal alias which corresponds to rtmpose-m_8xb64-210e_ap10k-256x256
         self.animal_pose_model = MMPoseInferencer(
@@ -40,9 +46,9 @@ class PoseKeypointPipeline:
             # Handle different input formats
             if frames.dim() == 4:
                 if frames.shape[1] == 3:  # [N, C, H, W]
-                    frame = frames[i].permute(1, 2, 0).cpu().numpy()
+                    frame = frames[i].permute(1, 2, 0).numpy()
                 else:  # [N, H, W, C]
-                    frame = frames[i].cpu().numpy()
+                    frame = frames[i].numpy()
             else:
                 raise ValueError(f"Unsupported frame tensor shape: {frames.shape}")
                 
@@ -52,7 +58,7 @@ class PoseKeypointPipeline:
                 
             yield frame
     
-    def _extract_keypoints_from_predictions(self, predictions: List) -> List[np.ndarray]:
+    def _extract_keypoints_from_predictions(self, predictions: Dict) -> List[np.ndarray]:
         """
         Extract keypoints from model predictions.
         
@@ -64,15 +70,13 @@ class PoseKeypointPipeline:
         """
         all_keypoints = []
         
-        for pred in predictions:
-            preds = pred['predictions'][0]
-            instances = preds.get('pred_instances', preds.get('instances', []))
+        for pred_instance in predictions['predictions'][0]:
+            keypoints = pred_instance.get('keypoints', [])
             
-            for inst in instances:
-                if np.mean(inst['keypoint_scores']) >= self.keypoint_threshold:
-                    
-                    # Only keep keypoint coordinates - remove confidence scores if present
-                    all_keypoints.append(torch.from_numpy(inst['keypoints']).float())
+            if np.mean(pred_instance.get('keypoint_scores',[])) >= self.keypoint_threshold:
+                
+                # Only keep keypoint coordinates - remove confidence scores if present
+                all_keypoints.append(torch.Tensor(keypoints).float())
                     
         return all_keypoints
     
@@ -93,14 +97,14 @@ class PoseKeypointPipeline:
         if frames.numel() == 0:
             return torch.nested.nested_tensor([]), torch.empty(0, 2)
             
-        for frame_idx, frame in enumerate(self._frame_generator(frames)):
+        for frame_idx, frame in tqdm(enumerate(self._frame_generator(frames))):
             try:
                 # Process with human pose model
-                human_predictions = list(self.human_pose_model(frame, show=False, vis_out_dir=None))
+                human_predictions = next(self.human_pose_model(frame, show=False))
                 human_keypoints = self._extract_keypoints_from_predictions(human_predictions)
                 
                 # Process with animal pose model  
-                animal_predictions = list(self.animal_pose_model(frame, show=False, vis_out_dir=None))
+                animal_predictions = next(self.animal_pose_model(frame, show=False))
                 animal_keypoints = self._extract_keypoints_from_predictions(animal_predictions)
                 
                 # Combine keypoints from both models
@@ -132,5 +136,11 @@ class PoseKeypointPipeline:
                 - flattened_points: Tensor of shape [total_points, 2] with all keypoints
                   flattened from all objects and frames
         """
-        for frame_nested, frame_flattened in self.process_video(frames=frames):
-            return frame_nested, frame_flattened
+        nested_frame_data = []
+        flattened_frame_data = []
+        
+        for i, (frame_nested, frame_flattened) in enumerate(self.process_video(frames=frames)):
+            nested_frame_data.append(frame_nested)
+            flattened_frame_data.append(frame_flattened)
+        
+        return nested_frame_data, torch.nested.nested_tensor(flattened_frame_data)

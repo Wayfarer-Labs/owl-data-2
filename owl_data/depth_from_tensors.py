@@ -25,12 +25,15 @@ def find_tensor_paths(root_dir, force_overwrite=False):
     return input_paths, output_paths
 
 @ray.remote(num_gpus=1)
-def process_tensor_on_gpu(input_path, output_path):
-    video = torch.load(input_path, map_location='cpu')  # [N,C,H,W]
-    model = BatchedDepthPipeline()
-    with torch.no_grad():
-        depth = model(video)  # [N,1,H,W] or similar
-    torch.save(depth, output_path)
+class DepthWorker:
+    def __init__(self, batch_size):
+        self.pipe = BatchedDepthPipeline(batch_size=batch_size)   # only once
+
+    def run(self, input_path, output_path):
+        video = torch.load(input_path, map_location='cuda')
+        with torch.no_grad():
+            depth = self.pipe(video)
+        torch.save(depth, output_path)
 
 def split_list(lst, n):
     # Splits lst into n nearly equal parts
@@ -44,6 +47,7 @@ def main():
     parser.add_argument("--force_overwrite", action="store_true", help="Overwrite existing depth tensors")
     parser.add_argument("--node_rank", type=int, default=0, help="Rank of this node (0-indexed)")
     parser.add_argument("--num_nodes", type=int, default=1, help="Total number of nodes")
+    parser.add_argument("--batch_size", type=int, default=500, help="Batch size for depth extraction (default: 500)")
     args = parser.parse_args()
 
     input_paths, output_paths = find_tensor_paths(args.input_dir, args.force_overwrite)
@@ -68,13 +72,14 @@ def main():
 
     ray.init(num_gpus=num_gpus, ignore_reinit_error=True)
 
+    # build one actor per GPU
+    workers = [DepthWorker.remote(args.batch_size) for _ in range(num_gpus)]
+
     result_refs = []
-    for gpu_id, split in enumerate(splits):
-        if len(split) == 0:
-            continue
-        for in_path, out_path in split:
-            ref = process_tensor_on_gpu.remote(in_path, out_path)
-            result_refs.append(ref)
+    for idx, (in_path, out_path) in enumerate(zip(input_paths, output_paths)):
+        worker = workers[idx % num_gpus]          # simple round-robin
+        ref = worker.run.remote(in_path, out_path)
+        result_refs.append(ref)
 
     with tqdm(total=len(result_refs), desc=f"Extracting depth (node {args.node_rank})", unit="video") as pbar:
         while result_refs:

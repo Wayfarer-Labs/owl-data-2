@@ -78,22 +78,25 @@ class DepthPipeline:
             return depth
 
 class BatchedDepthPipeline:
-    def __init__(self, input_mode = "uint8"):
+    def __init__(self, input_mode = "uint8", batch_size = 500):
         self.model = DepthAnythingV2(encoder='vitl', features=256, out_channels=[256, 512, 1024, 1024])
         download_ckpt_if_not_exists()
 
         self.model.load_state_dict(torch.load('checkpoints/depth/depth_anything_v2_vitl.pth', map_location='cpu'))
-        self.model.cuda().bfloat16().eval()
+        self.model = self.model.cuda().bfloat16().eval()
         self.model = torch.compile(self.model,dynamic=False,fullgraph=True)
-        self.batch_size = 32
+        self.batch_size = batch_size
 
         self.input_mode = input_mode # "uint8" or "bfloat16"
 
+    @torch.compile()
     def preprocess(self, x, target_size=(518, 518)):
         """
         x is assumed [b,c,h,w] [-1,1] bfloat16 tensor (RGB)
         Returns: [b,c,h,w] float32 tensor, normalized as expected by DepthAnythingV2
         """
+
+        x = x.cuda(non_blocking=True)
 
         if self.input_mode == "bfloat16":
             # Convert from [-1,1] to [0,1]
@@ -108,7 +111,7 @@ class BatchedDepthPipeline:
 
         x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=True)
 
-        return x.cuda().bfloat16()
+        return x
 
     def forward(self, batch):
         # Assume batch is input to preprocess

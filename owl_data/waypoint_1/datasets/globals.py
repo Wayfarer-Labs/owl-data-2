@@ -11,3 +11,6 @@ COMMA_2K19_NORMALIZED_360_DIR = Path('/mnt/data/waypoint_1/normalized360/comma2k
 
 MKIF_DIR = Path('/mnt/data/waypoint_1/datasets/MKIF/videos')
 MKIF_OUT_DIR = Path('/mnt/data/waypoint_1/normalized360/mkif')
+
+EGOEXPLORE_DIR = Path('/mnt/data/waypoint_1/datasets/egoexplore/videos')
+EGOEXPLORE_OUT_DIR = Path('/mnt/data/waypoint_1/normalized360/egoexplore/videos')

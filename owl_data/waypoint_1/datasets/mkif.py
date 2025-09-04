@@ -7,6 +7,7 @@ from owl_data.waypoint_1.datasets.globals import STRIDE_SEC, MKIF_DIR, MKIF_OUT_
 import random
 import torchvision.transforms as T
 import multiprocessing
+import os
 
 def _to_360p_fn(frame_chw: torch.Tensor) -> callable:
     # Define transforms: center crop to 16:9 then resize to 640x360
@@ -100,7 +101,7 @@ def process_mkif(mkif_path: Path, stride_sec: int = 5, out_dir: Path = MKIF_OUT_
     paths = list(mkif_path.glob('*.mp4')) + list(mkif_path.glob('*.webm'))
     random.shuffle(paths)
     
-    with multiprocessing.Pool(processes=16) as pool:
+    with multiprocessing.Pool(processes=os.cpu_count()) as pool:
         pool.starmap(process_single_file, [(path, stride_sec, out_dir) for path in paths])
 
 if __name__ == '__main__':

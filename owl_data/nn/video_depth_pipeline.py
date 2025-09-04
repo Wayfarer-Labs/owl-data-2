@@ -9,10 +9,11 @@ sys.path.append('Video-Depth-Anything')
 torch.backends.cuda.enable_flash_sdp(True)
 import pdb
 from video_depth_anything.video_depth import VideoDepthAnything
+from metric_depth.video_depth_anything.video_depth import VideoDepthAnything as MetricVideoDepthAnything
 from utils.dc_utils import read_video_frames, save_video
 
 class VideoDepthPipeline:
-    def __init__(self, depth_encoder:str='vitl', save_video_depth:bool=False):
+    def __init__(self, depth_encoder:str='vitl', save_video_depth:bool=False, epsilon:float=1e-8):
         self.model_configs = {
             'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
             'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
@@ -20,14 +21,18 @@ class VideoDepthPipeline:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.save_video = save_video_depth
 
-        self.video_depth_anything = VideoDepthAnything(**self.model_configs[depth_encoder])
-        
+        # self.video_depth_anything = VideoDepthAnything(**self.model_configs[depth_encoder])
+        self.video_depth_anything = MetricVideoDepthAnything(**self.model_configs[depth_encoder])
+
         # Get path to Video-Depth-Anything checkpoints directory dynamically
         project_root = os.path.normpath(os.path.join(os.path.abspath(__file__),'..','..','..'))
         checkpoint_path = os.path.join(project_root, 'Video-Depth-Anything' , 'checkpoints' , f'video_depth_anything_{depth_encoder}.pth')
         
         self.video_depth_anything.load_state_dict(torch.load(str(checkpoint_path), map_location='cpu'), strict=True)
         self.video_depth_anything = self.video_depth_anything.to(self.device).eval()
+
+        #use to invert the depth map
+        self.epsilon = epsilon
     
     def convert_tensor_to_frames(self, frames_tensor: torch.Tensor) -> np.ndarray:
         """
@@ -60,6 +65,8 @@ class VideoDepthPipeline:
                 device=self.device, 
                 fp32=True
             )
+            depths = self.replace_inf(depths)
+            depths = self.invert_and_rescale_depth(depths)
             torch.cuda.empty_cache()
             
         if self.save_video:
@@ -69,6 +76,18 @@ class VideoDepthPipeline:
         #Convert depths back to tensors
         return torch.from_numpy(depths), fps
     
+    def invert_and_rescale_depth(self, depths:np.array):
+        max_depth = depths.max()
+        min_depth = depths.min()
+        depths = (depths-min_depth)/(max_depth-min_depth)
+        depths = 1-depths
+        return depths
+
+    def replace_inf(self, tensor:np.array):
+        max_finite = tensor[np.isfinite(tensor)].max()
+        tensor = np.where(np.isinf(tensor), max_finite, tensor)
+        return tensor
+
     def __call__(self, frames: torch.Tensor, video_dir: str, video_name:str, target_width: int, target_height:int, video_fps: int):
         depths, fps = self.process_video(frames=frames, video_dir=video_dir, video_name=video_name, target_width=target_width, target_height=target_height, video_fps=video_fps)
         return depths, fps

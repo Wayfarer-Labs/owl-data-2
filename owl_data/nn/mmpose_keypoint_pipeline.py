@@ -58,7 +58,7 @@ class PoseKeypointPipeline:
                 
             yield frame
     
-    def _extract_keypoints_from_predictions(self, predictions: Dict) -> List[np.ndarray]:
+    def _extract_keypoints_from_predictions(self, predictions: Dict, height:int, width:int) -> List[np.ndarray]:
         """
         Extract keypoints from model predictions.
         
@@ -71,7 +71,10 @@ class PoseKeypointPipeline:
         all_keypoints = []
         
         for pred_instance in predictions['predictions'][0]:
-            keypoints = pred_instance.get('keypoints', [])
+            keypoints = np.array(pred_instance.get('keypoints', []))
+            #clip keypoints within bounds of image tensor
+            keypoints[:,0] = np.clip(keypoints[:,0], 0, width-1)
+            keypoints[:,1] = np.clip(keypoints[:,1], 0, height-1)
             
             if np.mean(pred_instance.get('keypoint_scores',[])) >= self.keypoint_threshold:
                 
@@ -101,11 +104,19 @@ class PoseKeypointPipeline:
             try:
                 # Process with human pose model
                 human_predictions = next(self.human_pose_model(frame, show=False))
-                human_keypoints = self._extract_keypoints_from_predictions(human_predictions)
+                human_keypoints = self._extract_keypoints_from_predictions(
+                                    human_predictions,
+                                    height = frame.shape[0],
+                                    width = frame.shape[1]
+                )
                 
                 # Process with animal pose model  
                 animal_predictions = next(self.animal_pose_model(frame, show=False))
-                animal_keypoints = self._extract_keypoints_from_predictions(animal_predictions)
+                animal_keypoints = self._extract_keypoints_from_predictions(
+                                    animal_predictions,
+                                    height = frame.shape[0],
+                                    width = frame.shape[1]
+                )
                 
                 # Combine keypoints from both models
                 frame_keypoints = human_keypoints + animal_keypoints

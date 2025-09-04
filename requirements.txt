@@ -3,6 +3,7 @@ tqdm
 torch
 torchcodec
 torchvision
+toolz
 av
 opencv-python
 numpy

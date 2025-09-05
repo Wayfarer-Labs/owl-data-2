@@ -4,6 +4,7 @@ import numpy as np
 import av
 import os
 from typing import Generator
+from multimethod import multimethod, overload
 import torchvision.transforms as T
 import cv2
 
@@ -29,36 +30,79 @@ KINETICS_700_DIR = Path('/mnt/data/waypoint_1/datasets/kinetics700/Kinetics-700/
 KINETICS_700_OUT_DIR = Path('/mnt/data/waypoint_1/normalized360/kinetics700/Kinetics-700')
 
 
-
-def _to_360p_fn(frame_chw: torch.Tensor) -> callable:
-    # Define transforms: center crop to 16:9 then resize to 640x360
+def _to_16_9_crop_fn(frame_chw: torch.Tensor) -> callable:
+    """
+    Creates a transform that crops to 16:9 aspect ratio.
+    For standard resolutions (360p, 720p, 1080p, etc.), preserves original resolution.
+    For weird aspect ratios, resizes then crops to 360p (640x360).
+    """
     original_width = frame_chw.shape[2]
     original_height = frame_chw.shape[1]
     
-    target_aspect = 640 / 360  # 16:9
+    target_aspect = 16 / 9
     original_aspect = original_width / original_height
     
-    if original_aspect > target_aspect:
-        # Original is wider - crop width
-        crop_width = int(original_height * target_aspect)
-        crop_height = original_height
-    else:
-        # Original is taller - crop height  
-        crop_width = original_width
-        crop_height = int(original_width / target_aspect)
+    # Define standard resolutions we want to preserve
+    standard_resolutions = [
+        (640, 360),   # 360p
+        (854, 480),   # 480p
+        (1280, 720),  # 720p
+        (1920, 1080), # 1080p
+        (2560, 1440), # 1440p
+        (3840, 2160), # 4K
+    ]
     
-    # Update transform with calculated crop size
-    transform = T.Compose([
-        T.CenterCrop(size=(crop_height, crop_width)),
-        T.Resize(size=(360, 640), antialias=True)
-    ])
+    # Check if this is close to a standard resolution (within 10% tolerance)
+    is_standard_resolution = False
+    for std_width, std_height in standard_resolutions:
+        width_ratio = min(original_width, std_width) / max(original_width, std_width)
+        height_ratio = min(original_height, std_height) / max(original_height, std_height)
+        if width_ratio > 0.9 and height_ratio > 0.9:
+            is_standard_resolution = True
+            break
+    
+    if is_standard_resolution:
+        # Standard resolution: only crop to 16:9, preserve resolution
+        if original_aspect > target_aspect:
+            # Original is wider - crop width to achieve 16:9
+            crop_width = int(original_height * target_aspect)
+            crop_height = original_height
+        else:
+            # Original is taller - crop height to achieve 16:9
+            crop_width = original_width
+            crop_height = int(original_width / target_aspect)
+        
+        transform = T.Compose([
+            T.CenterCrop(size=(crop_height, crop_width))
+        ])
+    else:
+        # Weird aspect ratio: resize then crop to 360p
+        # First resize to make one dimension fit 360p, then crop to 16:9
+        if original_aspect > target_aspect:
+            # Wider than 16:9 - fit height to 360, then crop width
+            resize_height = 360
+            resize_width = int(360 * original_aspect)
+        else:
+            # Taller than 16:9 - fit width to 640, then crop height  
+            resize_width = 640
+            resize_height = int(640 / original_aspect)
+        
+        transform = T.Compose([
+            T.Resize(size=(resize_height, resize_width), antialias=True),
+            T.CenterCrop(size=(360, 640))
+        ])
+    
     return transform
+
 
 is_mp4 = lambda path: isinstance(path, Path) and path.suffix == '.mp4'
 is_hevc = lambda path: isinstance(path, Path) and path.suffix == '.hevc'
+is_webm = lambda path: isinstance(path, Path) and path.suffix == '.webm'
 
+
+@overload
 def process_video_seek(
-    path: is_mp4,
+    path: is_mp4 | is_webm,
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM
 ) -> Generator[torch.Tensor, None, None]:
@@ -93,7 +137,7 @@ def process_video_seek(
                 ts = float(frame.pts * stream.time_base)
                 if ts + 1e-6 >= t:  # reached our target
                     torch_frame = torch.from_numpy(frame.to_rgb().to_ndarray()).permute(2, 0, 1)
-                    transform = transform or _to_360p_fn(torch_frame)
+                    transform = transform or _to_16_9_crop_fn(torch_frame)
                     buf.append(transform(torch_frame))
                     print(f'appended frame at ts {ts}')
                     if len(buf) == chunk_size:
@@ -106,6 +150,7 @@ def process_video_seek(
             yield torch.stack(buf)
 
 
+@overload
 def process_video_seek(
     path: is_hevc,
     stride_sec: float = 5.0,
@@ -117,7 +162,7 @@ def process_video_seek(
         print(f"Cannot open video file: {path}")
         return
     
-    transform_fn = _to_360p_fn(torch.zeros(
+    transform_fn = _to_16_9_crop_fn(torch.zeros(
         3,
         cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
         cap.get(cv2.CAP_PROP_FRAME_WIDTH))

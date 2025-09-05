@@ -153,7 +153,10 @@ def process(
         utils.process_video_seek(path, stride_sec, chunk_size)
     ):
         filepath = output_path(path) / f'{i:08d}_rgb.pt'
-        if not force_overwrite and filepath.exists(): continue
+        
+        if not force_overwrite and filepath.exists():
+            continue
+        
         torch.save(chunk, filepath)
         yield filepath
 

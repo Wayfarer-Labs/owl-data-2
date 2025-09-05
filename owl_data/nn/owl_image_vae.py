@@ -1,20 +1,27 @@
 import torch
-
 import sys
-sys.path.append("./owl-vaes/")
-from owl_vaes import from_pretrained
 
 class EncodingPipe:
     def __init__(
         self, cfg_path, ckpt_path
     ):
+        sys.path.append("../owl-vaes/")
+        from owl_vaes import from_pretrained
+
         model = from_pretrained(cfg_path, ckpt_path)
         model = model.encoder.eval().bfloat16().cuda()
         self.model = torch.compile(model, mode='max-autotune', dynamic=False, fullgraph=True)
+
+        self.cached_shape = None
     
     @torch.no_grad()
     def __call__(self, x):
-        return self.model(x)
+        if self.cached_shape is None:
+            self.cached_shape = x.shape
+        else:
+            assert x.shape == self.cached_shape, "Shape mismatch"
+
+        return self.model(x).clone()
 
 class BatchedEncodingPipe:
     def __init__(self, cfg_path, ckpt_path, batch_size=128):
@@ -43,13 +50,13 @@ class BatchedEncodingPipe:
         return out
 
 if __name__ == "__main__":
-    cfg_path = "/mnt/data/shahbuland/owl-vaes/configs/1x/base.yml"
-    ckpt_path = "/mnt/data/shahbuland/owl-vaes/checkpoints/1x_rgb_depth/step_100000.pt"
+    cfg_path = "/mnt/data/shahbuland/owl-vaes/configs/1x/no_depth.yml"
+    ckpt_path = "/mnt/data/shahbuland/owl-vaes/checkpoints/1x_rgb_no_depth/step_200000.pt"
 
     pipe = EncodingPipe(cfg_path, ckpt_path)
 
     import torch
 
-    x = torch.randn(1, 4, 512, 512).cuda().bfloat16()
+    x = torch.randn(8, 3, 512, 512).cuda().bfloat16()
     out = pipe(x)
     print(out.shape)

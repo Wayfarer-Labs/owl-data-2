@@ -1,6 +1,6 @@
 import ray
 import os
-from decord import VideoReader, AudioReader
+from .video_reader import VideoReader
 import torch
 from tqdm import tqdm
 import argparse
@@ -34,19 +34,19 @@ def to_tensor(frames, output_size):
     return frames
 
 @ray.remote
-def decode_video(path, chunk_size, output_size):
+def decode_video(path, chunk_size, output_size, stride):
     split_dir = os.path.dirname(path)
     split_dir = os.path.join(split_dir, "splits")
     os.makedirs(split_dir, exist_ok = True)
 
-    vr = VideoReader(path)
+    vr = VideoReader(path, stride)
     frames = []
     n_frames = 0
     split_ind = 0
 
-    for i in tqdm(range(len(vr))):
-        frame = vr[i]
-        frames.append(frame.asnumpy())
+    # Use VideoReader from video_reader.py, which is an iterable
+    for frame in vr:
+        frames.append(frame)  # frame is already a numpy array, HWC, uint8
 
         n_frames += 1
         if n_frames >= chunk_size:
@@ -57,7 +57,7 @@ def decode_video(path, chunk_size, output_size):
             split_ind += 1
 
             del chunk
-    
+
     if frames:
         chunk = to_tensor(frames, output_size)
         torch.save(chunk, os.path.join(split_dir, f"{split_ind:08d}_rgb.pt"))
@@ -70,9 +70,23 @@ if __name__ == "__main__":
     parser.add_argument('--output_size', type=int, nargs=2, default=[360, 640], help='Output size as two integers: height width')
     parser.add_argument('--force_overwrite', action='store_true', help='Force overwrite existing rgb tensors')
     parser.add_argument('--num_cpus', type=int, default=80, help='Number of CPUs to use for Ray')
+    parser.add_argument('--node_rank', type=int, default=0, help='Rank of this node (0-indexed)')
+    parser.add_argument('--num_nodes', type=int, default=1, help='Total number of nodes')
+    parser.add_argument('--stride', type=int, default=1, help='Frame skip')
     args = parser.parse_args()
 
     video_paths = get_video_paths(args.root_dir)
+
+    # Shard work across nodes
+    total_files = len(video_paths)
+    files_per_node = (total_files + args.num_nodes - 1) // args.num_nodes
+    start_idx = args.node_rank * files_per_node
+    end_idx = min((args.node_rank + 1) * files_per_node, total_files)
+    video_paths = video_paths[start_idx:end_idx]
+
+    if not video_paths:
+        print(f"Node {args.node_rank}: No videos assigned to this node after sharding.")
+        exit()
 
     # Initialize ray with specified number of CPUs
     ray.init(num_cpus=args.num_cpus)
@@ -91,15 +105,15 @@ if __name__ == "__main__":
         paths_to_process.append(path)
 
     if not paths_to_process:
-        print("No videos to process")
+        print(f"Node {args.node_rank}: No videos to process")
         exit()
 
     # Launch parallel processing
-    futures = [decode_video.remote(path, args.chunk_size, tuple(args.output_size)) 
+    futures = [decode_video.remote(path, args.chunk_size, tuple(args.output_size), args.stride) 
               for path in paths_to_process]
 
     # Wait for results with progress bar
-    with tqdm(total=len(futures), desc="Processing videos") as pbar:
+    with tqdm(total=len(futures), desc=f"Processing videos (node {args.node_rank})") as pbar:
         while futures:
             done, futures = ray.wait(futures)
             completed_paths = ray.get(done)
@@ -107,4 +121,4 @@ if __name__ == "__main__":
                 print(f"Completed processing {path}")
             pbar.update(len(done))
 
-    print("All videos processed!")
+    print(f"Node {args.node_rank}: All videos processed!")

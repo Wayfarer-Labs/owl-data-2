@@ -1,4 +1,8 @@
 decord
+tqdm
+torch
+torchcodec
+torchvision
 av
 opencv-python
 numpy

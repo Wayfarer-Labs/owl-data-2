@@ -34,12 +34,12 @@ def to_tensor(frames, output_size):
     return frames
 
 @ray.remote
-def decode_video(path, chunk_size, output_size):
+def decode_video(path, chunk_size, output_size, stride):
     split_dir = os.path.dirname(path)
     split_dir = os.path.join(split_dir, "splits")
     os.makedirs(split_dir, exist_ok = True)
 
-    vr = VideoReader(path)
+    vr = VideoReader(path, stride)
     frames = []
     n_frames = 0
     split_ind = 0
@@ -72,6 +72,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_cpus', type=int, default=80, help='Number of CPUs to use for Ray')
     parser.add_argument('--node_rank', type=int, default=0, help='Rank of this node (0-indexed)')
     parser.add_argument('--num_nodes', type=int, default=1, help='Total number of nodes')
+    parser.add_argument('--stride', type=int, default=1, help='Frame skip')
     args = parser.parse_args()
 
     video_paths = get_video_paths(args.root_dir)
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         exit()
 
     # Launch parallel processing
-    futures = [decode_video.remote(path, args.chunk_size, tuple(args.output_size)) 
+    futures = [decode_video.remote(path, args.chunk_size, tuple(args.output_size), args.stride) 
               for path in paths_to_process]
 
     # Wait for results with progress bar

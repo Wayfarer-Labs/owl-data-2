@@ -11,9 +11,6 @@ class EncodingPipe:
         model = from_pretrained(cfg_path, ckpt_path)
         model = model.encoder.eval().bfloat16().cuda()
         self.model = torch.compile(model, mode='max-autotune', dynamic=False, fullgraph=True)
-        self.model = model
-
-        #self.model = torch.compile(self.model)
 
         self.cached_shape = None
     

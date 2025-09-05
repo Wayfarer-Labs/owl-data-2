@@ -84,7 +84,7 @@ class BatchedDepthPipeline:
 
         self.model.load_state_dict(torch.load('checkpoints/depth/depth_anything_v2_vitl.pth', map_location='cpu'))
         self.model = self.model.cuda().bfloat16().eval()
-        self.model = torch.compile(self.model,dynamic=False,fullgraph=True)
+        self.model = torch.compile(self.model,dynamic=False,fullgraph=True, mode = 'max-autotune')
         self.batch_size = batch_size
 
         self.input_mode = input_mode # "uint8" or "bfloat16"

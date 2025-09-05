@@ -3,7 +3,7 @@ from typing import Generator
 
 import torch
 import av
-from owl_data.waypoint_1.datasets.globals import STRIDE_SEC, EGOEXPLORE_DIR, EGOEXPLORE_OUT_DIR, CHUNK_FRAME_NUM
+from owl_data.waypoint_1.datasets.utils import STRIDE_SEC, EGOEXPLORE_DIR, EGOEXPLORE_OUT_DIR, CHUNK_FRAME_NUM
 import random
 import torchvision.transforms as T
 import multiprocessing

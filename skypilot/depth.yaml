@@ -1,0 +1,19 @@
+resources:
+  cloud: kubernetes
+  accelerators: H200:8
+  
+num_nodes: 6
+
+run: |
+  cd /mnt/data/shahbuland
+  source venv/bin/activate
+  sudo apt install -y libgl1
+  cd /mnt/data/shahbuland/owl-data-2
+  python -m depth_from_tensors \
+    --input_dir /mnt/data/waypoint_1/normalized360 \
+    --num_gpus 8 \
+    --node_rank ${SKYPILOT_NODE_RANK} \
+    --num_nodes $SKYPILOT_NUM_NODES \
+    --batch_size 250
+
+# This example config does depth extraction from tensors.

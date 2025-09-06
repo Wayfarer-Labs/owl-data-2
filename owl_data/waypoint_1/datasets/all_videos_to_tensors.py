@@ -7,6 +7,7 @@ from typing import Literal, Generator
 import owl_data.waypoint_1.datasets.utils as utils
 import os
 import itertools
+import traceback
 
 NORMALIZED_360_DIR = Path('/mnt/data/waypoint_1/normalized360')
 Datasets = Literal[
@@ -68,27 +69,41 @@ def dataset_from_path(path: Path) -> Datasets:
         case path if 'MKIF' in path.parts: return 'mkif'
         case _: raise TypeError(f"Unsupported path: {path}")
 
+
+FAILED_LOG = Path("failed_videos.txt")
+
+
 @ray.remote
 def process(
     path: Path,
     stride_sec: float,
     chunk_size: int = 512,
     force_overwrite: bool = False,
-) -> list[Path]:
-    output_path(path).mkdir(parents=True, exist_ok=True)
-    paths = []
-    for i, chunk in enumerate(
-        utils.process_video_seek(path, stride_sec, chunk_size)
-    ):
-        filepath = output_path(path) / f'{i:08d}_rgb.pt'
+) -> dict:
+    """
+    Returns a small result dict instead of raising:
+      {"path": str, "ok": bool, "saved_count": int, "saved": [str], "error": str|None}
+    """
+    try:
+        outdir = output_path(path)
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        saved = []
+        for i, chunk in enumerate(utils.process_video_seek(path, stride_sec, chunk_size)):
+            fp = outdir / f"{i:08d}_rgb.pt"
+            if not force_overwrite and fp.exists(): continue
+            torch.save(chunk, fp)
+            saved.append(str(fp))
         
-        if not force_overwrite and filepath.exists():
-            continue
-        
-        torch.save(chunk, filepath)
-        paths.append(filepath)
-    
-    return paths
+        return {"path": str(path), "ok": True, "saved_count": len(saved), "saved": saved, "error": None}
+
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        tb  = "".join(traceback.format_exception_only(type(e), e)).strip()
+        tb_full = traceback.format_exc(limit=3)
+        return {"path": str(path), "ok": False, "saved_count": 0, "saved": [], "error": f"{err} | {tb} | {tb_full}", "failed_log": FAILED_LOG}
+
+
 
 
 def all_videos_to_tensors(
@@ -122,9 +137,21 @@ def all_videos_to_tensors(
     ) as pbar:
         while futures:
             done, futures = ray.wait(futures)
-            for path in ray.get(done):
+            results = ray.get(done)
+
+            for res in results:
                 pbar.update(1)
-                print(f'Processed {path}')
+                if res["ok"]: print(f"Processed {res['path']} -> {res['saved_count']} chunks")
+                else:
+                    msg = f"[FAIL] {res['path']} :: {res['error']}"
+                    print(msg)
+                    try:
+                        with FAILED_LOG.open("a") as f: f.write(res["path"] + "\t" + res["error"] + "\n")
+                    except Exception: print(f"[WARN] Could not write to {FAILED_LOG}: {msg}")
+
+    ray.shutdown()
+    print(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
+    print(f"Failures (if any) recorded in: {FAILED_LOG.resolve()}")
     
     ray.shutdown()
     print(f'Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos')
@@ -143,7 +170,7 @@ def main():
         num_cpus=args.num_cpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,
-        force_overwrite=args.force_overwrite,
+        force_overwrite=True,
     )
 
 def test():

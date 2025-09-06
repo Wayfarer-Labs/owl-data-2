@@ -3,7 +3,7 @@ resources:
   cpus: 64+
   memory: 256+
   
-num_nodes: 6
+num_nodes: 8
 
 setup: |
   sudo apt-get update

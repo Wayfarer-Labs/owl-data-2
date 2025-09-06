@@ -1,9 +1,7 @@
 import ray
 import tqdm
 import torch
-import numpy as np
 from pathlib import Path
-from multimethod import multimethod, parametric
 import argparse
 from typing import Literal, Generator
 import owl_data.waypoint_1.datasets.utils as utils
@@ -27,105 +25,48 @@ STRIDE_SEC: dict[Datasets, float] = {
 }
 
 
-is_epic_kitchens_100    = lambda path: isinstance(path, Path) and 'epic_kitchens_100' in path.parts
-is_comma2k19            = lambda path: isinstance(path, Path) and 'comma2k19' in path.parts
-is_egoexplore           = lambda path: isinstance(path, Path) and 'egoexplore' in path.parts
-is_kinetics700          = lambda path: isinstance(path, Path) and 'kinetics700' in path.parts
-is_mkif                 = lambda path: isinstance(path, Path) and 'MKIF' in path.parts
+def video_paths(dataset: Datasets) -> Generator[Path, None, None]:
+    match dataset:
+        case 'epic_kitchens_100':
+            root = Path('/mnt/data/waypoint_1/datasets') / 'epic_kitchens_100' / '2g1n6qdydwa9u22shpxqzp0t8m'
+            yield from root.glob('P*/videos/*.MP4')
+        case 'comma2k19':
+            root = Path('/mnt/data/waypoint_1/datasets') / 'comma2k19' / 'processed'
+            yield from root.glob('Chunk_*/**/**/video.hevc')
+        case 'egoexplore':
+            root = Path('/mnt/data/waypoint_1/datasets') / 'egoexplore' / 'videos'
+            yield from root.glob('*.mp4?*')
+        case 'kinetics700':
+            root = Path('/mnt/data/waypoint_1/datasets') / 'kinetics700' / 'Kinetics-700'
+            yield from root.glob('Kinetics700_part_*/test/*.mp4')
+        case 'mkif':
+            root = Path('/mnt/data/waypoint_1/datasets') / 'MKIF' / 'videos'
+            yield from root.glob('*.mp4'); yield from root.glob('*.webm')
+        case _:
+            raise TypeError(f"Unsupported dataset: {dataset!r}")
 
-EpicKitchensPath        = parametric(Path, is_epic_kitchens_100)
-Comma2k19Path           = parametric(Path, is_comma2k19)
-EgoexplorePath          = parametric(Path, is_egoexplore)
-Kinetics700Path         = parametric(Path, is_kinetics700)
-MkifPath                = parametric(Path, is_mkif)
-
-
-# ---------- video_paths
-@multimethod
-def video_paths(dataset: str) -> Generator[Path, None, None]:
-    raise NotImplementedError(f"Unsupported dataset: {dataset!r}")
-
-@video_paths.register
-def _(dataset: Literal['epic_kitchens_100']) -> Generator[Path, None, None]:
-    root = Path('/mnt/data/waypoint_1/datasets') / 'epic_kitchens_100' / '2g1n6qdydwa9u22shpxqzp0t8m'
-    yield from root.glob('P*/videos/*.MP4')
-
-@video_paths.register
-def _(dataset: Literal['comma2k19']) -> Generator[Path, None, None]:
-    root = Path('/mnt/data/waypoint_1/datasets') / 'comma2k19' / 'processed'
-    yield from root.glob('Chunk_*/**/**/video.hevc')
-
-@video_paths.register
-def _(dataset: Literal['egoexplore']) -> Generator[Path, None, None]:
-    root = Path('/mnt/data/waypoint_1/datasets') / 'egoexplore' / 'videos'
-    yield from root.glob('*.mp4?*')
-
-@video_paths.register
-def _(dataset: Literal['kinetics700']) -> Generator[Path, None, None]:
-    root = Path('/mnt/data/waypoint_1/datasets') / 'kinetics700' / 'Kinetics-700'
-    yield from root.glob('Kinetics700_part_*/test/*.mp4')
-
-@video_paths.register
-def _(dataset: Literal['mkif']) -> Generator[Path, None, None]:
-    root = Path('/mnt/data/waypoint_1/datasets') / 'MKIF' / 'videos'
-    yield from root.glob('*.mp4')
-    yield from root.glob('*.webm')
-
-
-# ---------- output_path
-@multimethod
 def output_path(path: Path) -> Path:
-    raise NotImplementedError(f"Unsupported path: {path}")
+    match path:
+        case path if 'epic_kitchens_100' in path.parts: return NORMALIZED_360_DIR / 'epic_kitchens_100' / path.parent.name / path.stem
+        case path if 'comma2k19' in path.parts:
+            # .../Chunk_*/<dongle>/<index>/video.hevc
+            return (NORMALIZED_360_DIR / 'comma2k19' / 'processed' /
+                    path.parent.parent.parent.name /  # Chunk_*
+                    path.parent.parent.name /         # dongle
+                    path.parent.name)                 # index
+        case path if 'egoexplore' in path.parts: return NORMALIZED_360_DIR / 'egoexplore' / 'videos' / path.stem
+        case path if 'kinetics700' in path.parts: return (NORMALIZED_360_DIR / 'kinetics700' / 'Kinetics-700' / path.parent.parent.name / path.parent.name / path.stem)
+        case path if 'MKIF' in path.parts: return NORMALIZED_360_DIR / 'MKIF' / 'videos' / path.stem
+        case _: raise TypeError(f"Unsupported path: {path}")
 
-@output_path.register
-def _(path: EpicKitchensPath) -> Path:
-    return NORMALIZED_360_DIR / 'epic_kitchens_100' / path.parent.name / path.stem
-
-@output_path.register
-def _(path: Comma2k19Path) -> Path:
-    # chunk / dongle / index
-    return (NORMALIZED_360_DIR / 'comma2k19' / 'processed' /
-            path.parent.parent.parent.name / path.parent.parent.name / path.parent.name)
-
-@output_path.register
-def _(path: EgoexplorePath) -> Path:
-    return NORMALIZED_360_DIR / 'egoexplore' / 'videos' / path.stem
-
-@output_path.register
-def _(path: Kinetics700Path) -> Path:
-    # .../Kinetics-700/Kinetics700_part_*/test/<file>.mp4
-    return (NORMALIZED_360_DIR / 'kinetics700' / 'Kinetics-700' /
-            path.parent.parent.name / path.parent.name / path.stem)
-
-@output_path.register
-def _(path: MkifPath) -> Path:
-    return NORMALIZED_360_DIR / 'MKIF' / 'videos' / path.stem
-
-# ---------- dataset_from_path
-@multimethod
 def dataset_from_path(path: Path) -> Datasets:
-    raise NotImplementedError(f"Unsupported path: {path}")
-
-@dataset_from_path.register
-def _(path: EpicKitchensPath) -> Literal['epic_kitchens_100']:
-    return 'epic_kitchens_100'
-
-@dataset_from_path.register
-def _(path: Comma2k19Path) -> Literal['comma2k19']:
-    return 'comma2k19'
-
-@dataset_from_path.register
-def _(path: EgoexplorePath) -> Literal['egoexplore']:
-    return 'egoexplore'
-
-@dataset_from_path.register
-def _(path: Kinetics700Path) -> Literal['kinetics700']:
-    return 'kinetics700'
-
-@dataset_from_path.register
-def _(path: MkifPath) -> Literal['mkif']:
-    return 'mkif'
-
+    match path:
+        case path if 'epic_kitchens_100' in path.parts: return 'epic_kitchens_100'
+        case path if 'comma2k19' in path.parts: return 'comma2k19'
+        case path if 'egoexplore' in path.parts: return 'egoexplore'
+        case path if 'kinetics700' in path.parts: return 'kinetics700'
+        case path if 'MKIF' in path.parts: return 'mkif'
+        case _: raise TypeError(f"Unsupported path: {path}")
 
 @ray.remote
 def process(
@@ -210,6 +151,14 @@ def test():
     local_video_paths = [Path(path) for path in local_video_paths]
     hevc = [Path('/mnt/data/waypoint_1/datasets/comma2k19/processed/Chunk_1/b0c9d2329ad1606b|2018-08-14--20-41-07/9/video.hevc')]
     list(process(hevc[0], 0.5, force_overwrite=True))
+    list(process(local_video_paths[0], 0.5, force_overwrite=True))
+    list(process(local_video_paths[1], 0.5, force_overwrite=True))
+    list(process(local_video_paths[2], 0.5, force_overwrite=True))
+    list(process(local_video_paths[3], 0.5, force_overwrite=True))
+    list(process(local_video_paths[4], 0.5, force_overwrite=True))
+    list(process(local_video_paths[5], 0.5, force_overwrite=True))
+    list(process(local_video_paths[6], 0.5, force_overwrite=True))
+    list(process(local_video_paths[7], 0.5, force_overwrite=True))
 
 if __name__ == '__main__':
     # test()

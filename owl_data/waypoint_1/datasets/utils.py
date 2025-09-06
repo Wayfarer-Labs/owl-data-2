@@ -4,7 +4,6 @@ import numpy as np
 import av
 import os
 from typing import Generator
-from multimethod import parametric, multimethod
 import torchvision.transforms as T
 import cv2
 
@@ -94,17 +93,19 @@ def _to_16_9_crop_fn(frame_chw: torch.Tensor) -> callable:
     
     return transform
 
-
-is_mp4_or_webm = lambda path: isinstance(path, Path) and (path.suffix == '.mp4' or path.suffix == '.webm')
-is_hevc = lambda path: isinstance(path, Path) and path.suffix == '.hevc'
-
-Mp4OrWebmPath = parametric(object, is_mp4_or_webm)
-HevcPath = parametric(object, is_hevc)
-
-
-@multimethod
 def process_video_seek(
-    path: Mp4OrWebmPath,
+    path: Path,
+    stride_sec: float = 5.0,
+    chunk_size: int = CHUNK_FRAME_NUM,
+) -> Generator[torch.Tensor, None, None]:
+    match path.suffix.lower():
+        case '.mp4' | '.webm': yield from process_video_seek_mp4_or_webm(path, stride_sec, chunk_size)
+        case '.hevc': yield from process_video_seek_hevc(path, stride_sec, chunk_size)
+        case _: raise NotImplementedError(f"Unsupported extension: {path.suffix}")
+
+
+def process_video_seek_mp4_or_webm(
+    path: Path,
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM,
 ) -> Generator[torch.Tensor, None, None]:
@@ -205,9 +206,8 @@ def process_video_seek(
             yield torch.stack(buf)
 
 
-@multimethod
-def process_video_seek(
-    path: HevcPath,
+def process_video_seek_hevc(
+    path: Path,
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM
 ) -> Generator[torch.Tensor, None, None]:

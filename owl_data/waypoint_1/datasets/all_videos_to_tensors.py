@@ -3,7 +3,7 @@ import tqdm
 import torch
 import numpy as np
 from pathlib import Path
-from multimethod import multimethod, overload
+from multimethod import multimethod, parametric
 import argparse
 from typing import Literal, Generator
 import owl_data.waypoint_1.datasets.utils as utils
@@ -26,119 +26,106 @@ STRIDE_SEC: dict[Datasets, float] = {
     'mkif': 0.5
 }
 
+
 is_epic_kitchens_100    = lambda path: isinstance(path, Path) and 'epic_kitchens_100' in path.parts
 is_comma2k19            = lambda path: isinstance(path, Path) and 'comma2k19' in path.parts
 is_egoexplore           = lambda path: isinstance(path, Path) and 'egoexplore' in path.parts
 is_kinetics700          = lambda path: isinstance(path, Path) and 'kinetics700' in path.parts
 is_mkif                 = lambda path: isinstance(path, Path) and 'MKIF' in path.parts
 
+EpicKitchensPath        = parametric(Path, is_epic_kitchens_100)
+Comma2k19Path           = parametric(Path, is_comma2k19)
+EgoexplorePath          = parametric(Path, is_egoexplore)
+Kinetics700Path         = parametric(Path, is_kinetics700)
+MkifPath                = parametric(Path, is_mkif)
 
-# ----- EPIC KITCHENS
 
+# ---------- video_paths
 @multimethod
-def video_paths(dataset: Literal['epic_kitchens_100']) -> Generator[Path, None, None]:
-    yield from (
-        Path('/mnt/data/waypoint_1/datasets')
-        / 'epic_kitchens_100' / '2g1n6qdydwa9u22shpxqzp0t8m'
-    ).glob('P*/videos/*.MP4')
+def video_paths(dataset: str) -> Generator[Path, None, None]:
+    raise NotImplementedError(f"Unsupported dataset: {dataset!r}")
 
-@overload
-def output_path(path: is_epic_kitchens_100) -> Path:
-    return NORMALIZED_360_DIR / 'epic_kitchens_100' / path.parent.name / path.stem
+@video_paths.register
+def _(dataset: Literal['epic_kitchens_100']) -> Generator[Path, None, None]:
+    root = Path('/mnt/data/waypoint_1/datasets') / 'epic_kitchens_100' / '2g1n6qdydwa9u22shpxqzp0t8m'
+    yield from root.glob('P*/videos/*.MP4')
 
-@overload
-def dataset_from_path(path: is_epic_kitchens_100) -> Literal['epic_kitchens_100']:
-    return 'epic_kitchens_100'
+@video_paths.register
+def _(dataset: Literal['comma2k19']) -> Generator[Path, None, None]:
+    root = Path('/mnt/data/waypoint_1/datasets') / 'comma2k19' / 'processed'
+    yield from root.glob('Chunk_*/**/**/video.hevc')
 
-# ----- COMMA2k19
+@video_paths.register
+def _(dataset: Literal['egoexplore']) -> Generator[Path, None, None]:
+    root = Path('/mnt/data/waypoint_1/datasets') / 'egoexplore' / 'videos'
+    yield from root.glob('*.mp4?*')
 
-@multimethod
-def video_paths(dataset: Literal['comma2k19']) -> Generator[Path, None, None]:
-    yield from (
-        Path('/mnt/data/waypoint_1/datasets')
-        / 'comma2k19' / 'processed'
-    ).glob('Chunk_*/**/**/video.hevc')
+@video_paths.register
+def _(dataset: Literal['kinetics700']) -> Generator[Path, None, None]:
+    root = Path('/mnt/data/waypoint_1/datasets') / 'kinetics700' / 'Kinetics-700'
+    yield from root.glob('Kinetics700_part_*/test/*.mp4')
 
-@overload
-def output_path(path: is_comma2k19) -> Path:
-    return (
-        NORMALIZED_360_DIR /
-        'comma2k19' / 
-        'processed' /
-        path.parent.parent.parent.name /  # chunk
-        path.parent.parent.name / # dongle
-        path.parent.name # index
-    )
-
-@overload
-def dataset_from_path(path: is_comma2k19) -> Literal['comma2k19']:
-    return 'comma2k19'
-
-# ----- EGOEXPLORE
-
-@multimethod
-def video_paths(dataset: Literal['egoexplore']) -> Generator[Path, None, None]:
-    yield from (
-        Path('/mnt/data/waypoint_1/datasets')
-        / 'egoexplore' / 'videos'
-    ).glob('*.mp4?*')
-
-@overload
-def dataset_from_path(path: is_egoexplore) -> Literal['egoexplore']:
-    return 'egoexplore'
-
-@overload
-def output_path(path: is_egoexplore) -> Path:
-    return (
-        NORMALIZED_360_DIR /
-        'egoexplore' / 'videos' /
-        path.stem
-    )
-
-# ----- KINETICS 700
-
-@multimethod
-def video_paths(dataset: Literal['kinetics700']) -> Generator[Path, None, None]:
-    yield from (
-        Path('/mnt/data/waypoint_1/datasets')
-        / 'kinetics700' / 'Kinetics-700'
-    ).glob('Kinetics700_part_*/test/*.mp4')
-
-@overload
-def dataset_from_path(path: is_kinetics700) -> Literal['kinetics700']:
-    return 'kinetics700'
-
-@overload
-def output_path(path: is_kinetics700) -> Path:
-    return (
-        NORMALIZED_360_DIR /
-        'kinetics700' / 'Kinetics-700' /
-        path.parent.parent.name / # Kinetics700_part_*
-        path.parent.name / # test
-        path.stem
-    )
-
-# ------ MKIF
-
-@multimethod
-def video_paths(dataset: Literal['mkif']) -> Generator[Path, None, None]:
+@video_paths.register
+def _(dataset: Literal['mkif']) -> Generator[Path, None, None]:
     root = Path('/mnt/data/waypoint_1/datasets') / 'MKIF' / 'videos'
     yield from root.glob('*.mp4')
     yield from root.glob('*.webm')
 
-@overload
-def dataset_from_path(path: is_mkif) -> Literal['mkif']:
+
+# ---------- output_path
+@multimethod
+def output_path(path: Path) -> Path:
+    raise NotImplementedError(f"Unsupported path: {path}")
+
+@output_path.register
+def _(path: EpicKitchensPath) -> Path:
+    return NORMALIZED_360_DIR / 'epic_kitchens_100' / path.parent.name / path.stem
+
+@output_path.register
+def _(path: Comma2k19Path) -> Path:
+    # chunk / dongle / index
+    return (NORMALIZED_360_DIR / 'comma2k19' / 'processed' /
+            path.parent.parent.parent.name / path.parent.parent.name / path.parent.name)
+
+@output_path.register
+def _(path: EgoexplorePath) -> Path:
+    return NORMALIZED_360_DIR / 'egoexplore' / 'videos' / path.stem
+
+@output_path.register
+def _(path: Kinetics700Path) -> Path:
+    # .../Kinetics-700/Kinetics700_part_*/test/<file>.mp4
+    return (NORMALIZED_360_DIR / 'kinetics700' / 'Kinetics-700' /
+            path.parent.parent.name / path.parent.name / path.stem)
+
+@output_path.register
+def _(path: MkifPath) -> Path:
+    return NORMALIZED_360_DIR / 'MKIF' / 'videos' / path.stem
+
+# ---------- dataset_from_path
+@multimethod
+def dataset_from_path(path: Path) -> Datasets:
+    raise NotImplementedError(f"Unsupported path: {path}")
+
+@dataset_from_path.register
+def _(path: EpicKitchensPath) -> Literal['epic_kitchens_100']:
+    return 'epic_kitchens_100'
+
+@dataset_from_path.register
+def _(path: Comma2k19Path) -> Literal['comma2k19']:
+    return 'comma2k19'
+
+@dataset_from_path.register
+def _(path: EgoexplorePath) -> Literal['egoexplore']:
+    return 'egoexplore'
+
+@dataset_from_path.register
+def _(path: Kinetics700Path) -> Literal['kinetics700']:
+    return 'kinetics700'
+
+@dataset_from_path.register
+def _(path: MkifPath) -> Literal['mkif']:
     return 'mkif'
 
-@overload
-def output_path(path: is_mkif) -> Path:
-    return (
-        NORMALIZED_360_DIR /
-        'MKIF' / 'videos' /
-        path.stem
-    )
-
-# -----
 
 @ray.remote
 def process(
@@ -146,9 +133,9 @@ def process(
     stride_sec: float,
     chunk_size: int = 512,
     force_overwrite: bool = False,
-) -> Generator[Path, None, None]:
+) -> list[Path]:
     output_path(path).mkdir(parents=True, exist_ok=True)
-
+    paths = []
     for i, chunk in enumerate(
         utils.process_video_seek(path, stride_sec, chunk_size)
     ):
@@ -158,7 +145,9 @@ def process(
             continue
         
         torch.save(chunk, filepath)
-        yield filepath
+        paths.append(filepath)
+    
+    return paths
 
 
 def all_videos_to_tensors(
@@ -216,5 +205,12 @@ def main():
         force_overwrite=args.force_overwrite,
     )
 
+def test():
+    local_video_paths = ['/mnt/data/waypoint_1/datasets/MKIF/videos/-6dvhAflfbc.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/-TenhotzKlQ.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/-XeThFZN8mc.webm', '/mnt/data/waypoint_1/datasets/MKIF/videos/00N3siEEqsQ.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/02ciFYAMrfw.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0RpTykaCVNQ.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0_qbSUGNC-M.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0a7pZaanATU.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0hPBgw_wzZI.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0piwAogCynU.webm']
+    local_video_paths = [Path(path) for path in local_video_paths]
+    hevc = [Path('/mnt/data/waypoint_1/datasets/comma2k19/processed/Chunk_1/b0c9d2329ad1606b|2018-08-14--20-41-07/9/video.hevc')]
+    list(process(hevc[0], 0.5, force_overwrite=True))
+
 if __name__ == '__main__':
+    # test()
     main()

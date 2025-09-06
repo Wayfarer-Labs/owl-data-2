@@ -4,7 +4,7 @@ import numpy as np
 import av
 import os
 from typing import Generator
-from multimethod import multimethod, overload
+from multimethod import parametric, multimethod
 import torchvision.transforms as T
 import cv2
 
@@ -95,54 +95,109 @@ def _to_16_9_crop_fn(frame_chw: torch.Tensor) -> callable:
     return transform
 
 
-is_mp4 = lambda path: isinstance(path, Path) and path.suffix == '.mp4'
+is_mp4_or_webm = lambda path: isinstance(path, Path) and (path.suffix == '.mp4' or path.suffix == '.webm')
 is_hevc = lambda path: isinstance(path, Path) and path.suffix == '.hevc'
-is_webm = lambda path: isinstance(path, Path) and path.suffix == '.webm'
+
+Mp4OrWebmPath = parametric(object, is_mp4_or_webm)
+HevcPath = parametric(object, is_hevc)
 
 
-@overload
+@multimethod
 def process_video_seek(
-    path: is_mp4 | is_webm,
+    path: Mp4OrWebmPath,
     stride_sec: float = 5.0,
-    chunk_size: int = CHUNK_FRAME_NUM
+    chunk_size: int = CHUNK_FRAME_NUM,
 ) -> Generator[torch.Tensor, None, None]:
+    """
+    Seek-decoding sampler:
+      - Seeks in *stream time_base* ticks (correct for stream=...).
+      - Clamps to the actual last frame timestamp (prevents tail loops).
+      - Breaks cleanly when no frame >= target time is found after a seek.
+      - Dedupes repeats near EOF and emits fixed-size chunks.
+    """
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
 
-        # decoder threading helps a lot on CPU
-        cc = stream.codec_context
+        # Threading helps a lot on CPU decodes
         try:
-            cc.thread_type = "FRAME"   # or "SLICE" depending on codec
-            cc.thread_count = os.cpu_count()
+            cc = stream.codec_context
+            cc.thread_type = "FRAME"  # or "SLICE" depending on codec
+            cc.thread_count = max(1, os.cpu_count() or 1)
         except Exception:
             pass
 
-        # duration in seconds
+        # --- Helpers for timebases ---
+        tick = float(stream.time_base)                   # seconds per tick, e.g., 1/90000
+        def sec_to_pts(t: float) -> int:                 # seconds -> stream ticks
+            return int(round(t / tick))
+
+        # --- Establish duration_s (metadata) ---
         if stream.duration is not None and stream.time_base is not None:
             duration_s = float(stream.duration * stream.time_base)
-        else: duration_s = float(container.duration) / av.time_base  # fallback
+        elif container.duration is not None:
+            duration_s = float(container.duration) / av.time_base  # av.time_base = 1_000_000
+        else:
+            duration_s = float("inf")  # will be clamped below
 
+        # --- Find actual last frame timestamp (ts_last) once; clamp loop end ---
+        # Seek to "very end", decode forward to get last decodable frame
+        try:
+            container.seek(2**63 - 1, stream=stream, any_frame=True, backward=True)
+        except OverflowError:
+            # Fallback for platforms with smaller int
+            container.seek(9223372036854775807, stream=stream, any_frame=True, backward=True)
+
+        ts_last = None
+        for f in container.decode(stream):
+            if f.pts is not None:
+                ts_last = float(f.pts * tick)
+        if ts_last is None:
+            # Fall back to metadata if no frame decoded at tail
+            ts_last = duration_s if duration_s != float("inf") else 0.0
+
+        # Clamp the nominal duration to actual last frame
+        duration_s = min(duration_s, ts_last)
+
+        # Tolerance: a few ticks is safer than a fixed microsecond epsilon
+        eps = 3 * tick
+
+        # --- Main stride/seek loop ---
         transform = None
-        buf = []
+        buf: list[torch.Tensor] = []
+        last_ts_emitted: float | None = None
+
         t = 0.0
+        while t <= duration_s + eps:
+            # Seek to nearest keyframe at or before target in stream ticks
+            target_pts = sec_to_pts(t)
+            container.seek(target_pts, stream=stream, any_frame=False, backward=True)
 
-        while t < duration_s:
-            # Fast seek to nearest keyframe before t
-            container.seek(int(t * av.time_base), stream=stream, any_frame=False, backward=True)
-
-            # Decode forward until we reach t (or next frame past it)
+            hit = False
             for frame in container.decode(stream):
                 if frame.pts is None:
                     continue
-                ts = float(frame.pts * stream.time_base)
-                if ts + 1e-6 >= t:  # reached our target
-                    torch_frame = torch.from_numpy(frame.to_rgb().to_ndarray()).permute(2, 0, 1)
-                    transform = transform or _to_16_9_crop_fn(torch_frame)
-                    buf.append(transform(torch_frame))
-                    print(f'appended frame at ts {ts}')
-                    if len(buf) == chunk_size:
-                        yield torch.stack(buf); buf = []
-                    break  # go seek to next timestamp
+                ts = float(frame.pts * tick)
+
+                # If we've reached/passed the requested target (with tolerance), we can take this frame
+                if ts + eps >= t:
+                    # Dedupe if a repeated last frame is being surfaced near EOF or due to GOP structure
+                    if last_ts_emitted is None or ts > last_ts_emitted + 1e-12:
+                        torch_frame = torch.from_numpy(frame.to_rgb().to_ndarray()).permute(2, 0, 1)
+                        if transform is None:
+                            transform = _to_16_9_crop_fn(torch_frame)  # your provided function
+                        buf.append(transform(torch_frame))
+                        print(f"appended frame at ts: {ts}, t: {t}, eps: {eps}")
+                        last_ts_emitted = ts
+
+                        if len(buf) == chunk_size:
+                            yield torch.stack(buf)
+                            buf = []
+                    hit = True
+                    break  # move on to next stride target
+
+            if not hit:
+                # No frame >= t after seek+decode -> we've reached/passed EOF
+                break
 
             t += stride_sec
 
@@ -150,9 +205,9 @@ def process_video_seek(
             yield torch.stack(buf)
 
 
-@overload
+@multimethod
 def process_video_seek(
-    path: is_hevc,
+    path: HevcPath,
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM
 ) -> Generator[torch.Tensor, None, None]:
@@ -164,9 +219,9 @@ def process_video_seek(
     
     transform_fn = _to_16_9_crop_fn(torch.zeros(
         3,
-        cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
-        cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    )
+        int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    ))
     
     frames_buffer = []
     frame_count = 0

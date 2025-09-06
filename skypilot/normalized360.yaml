@@ -7,6 +7,7 @@ num_nodes: 8
 
 setup: |
   sudo apt-get update
+  uv python install 3.13
 
 run: |
   cd /mnt/data/sami/owl-data-2

@@ -8,6 +8,8 @@ num_nodes: 8
 setup: |
   sudo apt-get update
   uv python install 3.13
+  source /mnt/data/sami/owl-data-2/venv/bin/activate
+  which python
 
 run: |
   cd /mnt/data/sami/owl-data-2

@@ -7,6 +7,7 @@ num_nodes: 8
 
 setup: |
   sudo apt-get update
+  sudo apt-get install -y libgl1
   uv python install 3.13
   source /mnt/data/sami/owl-data-2/venv/bin/activate
   which python

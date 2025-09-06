@@ -1,0 +1,18 @@
+resources:
+  cloud: kubernetes
+  cpus: 64+
+  memory: 256+
+  
+num_nodes: 6
+
+setup: |
+  sudo apt-get update
+
+run: |
+  cd /mnt/data/sami/owl-data-2
+  source venv/bin/activate
+  export PYTHONPATH=.
+  python owl_data/waypoint_1/datasets/all_videos_to_tensors.py \
+    --num_cpus 64 \
+    --node_rank ${SKYPILOT_NODE_RANK} \
+    --num_nodes $SKYPILOT_NUM_NODES

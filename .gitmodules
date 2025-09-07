@@ -4,3 +4,19 @@
 [submodule "owl-vaes"]
 	path = owl-vaes
 	url = https://github.com/wayfarer-labs/owl-vaes
+[submodule "Video-Depth-Anything"]
+	path = Video-Depth-Anything
+	url = https://github.com/DepthAnything/Video-Depth-Anything.git
+	branch = main
+[submodule "MoGe"]
+	path = MoGe
+	url = git@github.com:microsoft/MoGe.git
+	branch = main
+[submodule "mmpose"]
+	path = mmpose
+	url = git@github.com:open-mmlab/mmpose.git
+	branch = main
+[submodule "segment-anything"]
+	path = segment-anything
+	url = git@github.com:facebookresearch/segment-anything.git
+	branch = main

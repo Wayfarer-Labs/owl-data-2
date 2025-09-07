@@ -48,26 +48,21 @@ def video_paths(dataset: Datasets) -> Generator[Path, None, None]:
 
 def output_path(path: Path) -> Path:
     match path:
-        case path if 'epic_kitchens_100' in path.parts: return NORMALIZED_360_DIR / 'epic_kitchens_100' / path.parent.name / path.stem
-        case path if 'comma2k19' in path.parts:
-            # .../Chunk_*/<dongle>/<index>/video.hevc
-            return (NORMALIZED_360_DIR / 'comma2k19' / 'processed' /
-                    path.parent.parent.parent.name /  # Chunk_*
-                    path.parent.parent.name /         # dongle
-                    path.parent.name)                 # index
-        case path if 'egoexplore' in path.parts: return NORMALIZED_360_DIR / 'egoexplore' / 'videos' / path.stem
-        case path if 'kinetics700' in path.parts: return (NORMALIZED_360_DIR / 'kinetics700' / 'Kinetics-700' / path.parent.parent.name / path.parent.name / path.stem)
-        case path if 'MKIF' in path.parts: return NORMALIZED_360_DIR / 'MKIF' / 'videos' / path.stem
-        case _: raise TypeError(f"Unsupported path: {path}")
+        case path if 'epic_kitchens_100'    in path.parts:  return NORMALIZED_360_DIR / 'epic_kitchens_100' / path.parent.name / path.stem
+        case path if 'comma2k19'            in path.parts:  return NORMALIZED_360_DIR / 'comma2k19' / 'processed' / path.parent.parent.parent.name / path.parent.parent.name / path.parent.name
+        case path if 'egoexplore'           in path.parts:  return NORMALIZED_360_DIR / 'egoexplore' / 'videos' / path.stem
+        case path if 'kinetics700'          in path.parts:  return NORMALIZED_360_DIR / 'kinetics700' / 'Kinetics-700' / path.parent.parent.name / path.parent.name / path.stem
+        case path if 'MKIF'                 in path.parts:  return NORMALIZED_360_DIR / 'MKIF' / 'videos' / path.stem
+        case _:                                             raise TypeError(f"Unsupported path: {path}")
 
 def dataset_from_path(path: Path) -> Datasets:
     match path:
-        case path if 'epic_kitchens_100' in path.parts: return 'epic_kitchens_100'
-        case path if 'comma2k19' in path.parts: return 'comma2k19'
-        case path if 'egoexplore' in path.parts: return 'egoexplore'
-        case path if 'kinetics700' in path.parts: return 'kinetics700'
-        case path if 'MKIF' in path.parts: return 'mkif'
-        case _: raise TypeError(f"Unsupported path: {path}")
+        case path if 'epic_kitchens_100'    in path.parts:  return 'epic_kitchens_100'
+        case path if 'comma2k19'            in path.parts:  return 'comma2k19'
+        case path if 'egoexplore'           in path.parts:  return 'egoexplore'
+        case path if 'kinetics700'          in path.parts:  return 'kinetics700'
+        case path if 'MKIF'                 in path.parts:  return 'mkif'
+        case _:                                             raise TypeError(f"Unsupported path: {path}")
 
 
 FAILED_LOG = Path("failed_videos.txt")

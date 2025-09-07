@@ -8,6 +8,9 @@ from owl_data.nn.mmpose_keypoint_pipeline import PoseKeypointPipeline
 from owl_data.nn.multi_gpu_sam_pipeline import MultiGPUSegmentationWrapper
 from owl_data.nn.sam_keypoint_pipeline import SegmentationPipeline
 import torch
+import torch.nn.functional as F
+import torchvision.transforms.functional as TF
+from torchvision.models.optical_flow import raft_large, Raft_Large_Weights
 import cv2
 import numpy as np 
 from tqdm import tqdm
@@ -25,17 +28,17 @@ class DepthPosePipeline:
                 keypoint_threshold:float=0.3, 
                 segmentation_threshold:float=0.5,
                 flow_static_threshold:float=0.7,
-                photo_static_threshold:float=0.08,
-                grad_min_thresh:float=0.05,
+                photo_static_threshold:float=0.07,
+                grad_min_threshold:float=0.04,
                 huber_delta:float=0.05,
                 iters:int=6,
-                ema_alpha:float=0.8,
+                ema_alpha:float=0.90,
                 radius:int=15,
-                eps_frac:float=1e-3,
-                var_window:int=6,
+                eps_frac:float=2e-3,
+                var_window:int=1,
                 tau:float=0.03,
-                edge_thresh:float=0.07,
-                beta:float=0.7
+                edge_threshold:float=0.1,
+                beta:float=0.6
                 ):
         self.video_depth_pipeline = VideoDepthPipeline(
                                     depth_encoder = depth_encoder,
@@ -51,6 +54,30 @@ class DepthPosePipeline:
                                 )
         
         self.moge_pipeline = MoGePointsIntrinsicsPipeline(save_video_depth=save_video_depth)
+
+        self.raft_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.raft_model = raft_large(weights=Raft_Large_Weights.DEFAULT).to(self.raft_device).eval()
+        self.raft_preproc = Raft_Large_Weights.DEFAULT.transforms()
+
+        #parameters from config
+        self.keypoint_threshold=0.3 if not keypoint_threshold else keypoint_threshold
+        self.segmentation_threshold=0.5 if not segmentation_threshold else segmentation_threshold
+        self.flow_static_threshold=0.9 if not flow_static_threshold else flow_static_threshold
+        self.photo_static_threshold=0.07 if not photo_static_threshold else photo_static_threshold
+        self.grad_min_threshold=0.04 if not grad_min_threshold else grad_min_threshold
+        self.huber_delta=0.05 if not huber_delta else huber_delta
+        self.iters=6 if not iters else iters 
+        self.ema_alpha=0.90 if not ema_alpha else ema_alpha
+        self.radius=15 if not radius else radius
+        self.epsilon = 1e-8
+        self.eps_frac=1e-3 if not eps_frac else eps_frac
+        self.var_window=1 if not var_window else var_window
+        self.tau=0.03 if not tau else tau
+        self.edge_threshold=0.07 if not edge_threshold else edge_threshold
+        self.beta=0.7 if not beta else beta
+
+        #separately save the merged depth video if needed
+        self.save_video_depth = save_video_depth
 
 
     def normalize_coord_map(self, coords_tensor: torch.Tensor):
@@ -297,7 +324,7 @@ class DepthPosePipeline:
         cy = K[1, 2] * H
 
         # Avoid division by zero if fx or fy are zero
-        eps = 1e-8
+        eps = self.epsilon
         fx = torch.as_tensor(fx, device=device, dtype=torch.float32).clamp_min(eps)
         fy = torch.as_tensor(fy, device=device, dtype=torch.float32).clamp_min(eps)
         cx = torch.as_tensor(cx, device=device, dtype=torch.float32)
@@ -465,7 +492,7 @@ class DepthPosePipeline:
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
     def run_pipeline_hybrid(self, frame_filename:str, video_dir:str, video_name:str, video_fps:int):
-        frames = torch.load(frame_filename)[:20]
+        frames = torch.load(frame_filename)[:50]
         frame_idx = frame_filename.split('/')[-1].split('_')[0]
 
         #Step 0: extract the video FOV using the first frame with MoGe
@@ -476,7 +503,8 @@ class DepthPosePipeline:
                                         video_name=video_name,
                                         video_fps=video_fps
                                         )
-        estimated_intrinsics = moge_output['intrinsics'][0].cpu()
+        torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
+        estimated_intrinsics = moge_output['intrinsics'][0]
         
         #Step 1: extract the RTM pose pixels for humans and animals in the frames
         separate_entity_keypoints, pose_keypoints = self.pose_keypoint_pipeline(frames=frames)
@@ -495,16 +523,27 @@ class DepthPosePipeline:
                                 target_height = frames[0].shape[1],
                                 video_fps = video_fps
                             )
+        torch.cuda.empty_cache()  # Clear GPU memory after VDA inference
 
         #Step 3.5: merge depth map from VDA and MoGE
-        pdb.set_trace()
-        flows_fwd, flows_bwd = self.build_flows_opencv(frames)
-        merged_depth_maps = self.merge_depth_maps(depthmap_vda=depthmap_vda, 
-                                        depthmap_moge=depthmap_moge,
+        flows_fwd, flows_bwd = self.build_optical_flow_raft(frames)
+        merged_depth_maps = self.merge_depth_maps(depthmap_vda=depth_tensors, 
+                                        depthmap_moge=moge_output['depth'],
                                         frames=frames,
                                         flows_fwd=flows_fwd,
                                         flows_bwd=flows_bwd)
-
+        pdb.set_trace()
+        import imageio
+        import matplotlib.cm as cm
+        writer = imageio.get_writer('./temp_files/depth_merged.mp4', fps=10, macro_block_size=1, codec='libx264', ffmpeg_params=['-crf', '18'])
+        colormap = np.array(cm.get_cmap("inferno").colors)
+        d_min, d_max = merged_depth_maps.min().item(), merged_depth_maps.max().item()
+        for i in range(merged_depth_maps.shape[0]):
+            depth = merged_depth_maps[i].numpy()
+            depth_norm = ((depth - d_min) / (d_max - d_min) * 255).astype(np.uint8)
+            depth_vis = depth_norm
+            writer.append_data(depth_vis)
+        writer.close()
         full_depth_path = os.path.join(video_dir, 'full_depth_splits')
         full_seg_path = os.path.join(video_dir, 'full_seg_splits')
         keypoint_depth_path = os.path.join(video_dir, 'keypoint_depth_splits')
@@ -557,6 +596,33 @@ class DepthPosePipeline:
         # Save the full 4-channel coord_depth_map
         torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
+    def _to_gray(self, img: torch.Tensor) -> torch.Tensor:
+        """
+        Convert frames to grayscale using torchvision.
+        Accepts (T,H,W,3) RGB in [0..1] or [0..255], or (T,H,W) already gray.
+        Returns (T,H,W) float in [0,1].
+        """
+        # Already grayscale: (T,H,W)
+        if img.ndim == 3:
+            g = img.float()
+            if g.max() > 1.5:
+                g = g / 255.0
+            return g.contiguous()
+
+        # RGB: (T,3,H,W)
+        if img.ndim == 4: 
+            if not img.shape[1] == 3:
+                #(T,H,W,3) -> (T,3,H,W)
+                img = img.permute(0,3,1,2)
+            x = img.float()
+            if x.max() > 1.5:
+                x = x / 255.0
+            # torchvision expects BCHW
+            g_bchw = TF.rgb_to_grayscale(x, num_output_channels=1)  # (T,1,H,W)
+            g = g_bchw[:, 0]                         # (T,H,W)
+            return g.contiguous()
+        raise ValueError("Expected (T,H,W) or (T,H,W,3) tensor.")
+
     def merge_depth_maps(self, 
         depthmap_vda: torch.Tensor,          # (T,H,W) relative VDA
         depthmap_moge: torch.Tensor,       # (T,H,W) metric MoGE
@@ -573,15 +639,15 @@ class DepthPosePipeline:
         eps_frac:float=None,
         var_window:int=None,
         tau:float=None,
-        edge_thresh:float=None,
+        edge_threshold:float=None,
         beta:float=None):
 
         T,H,W = depthmap_vda.shape
         assert depthmap_moge.shape == (T,H,W)
-
-        flow_static_thresh = self.flow_static_thresh if not flow_static_thresh else flow_static_thresh
-        photo_static_thresh = self.photo_static_thresh if not photo_static_thresh else photo_static_thresh
-        grad_min_thresh = self.grad_min_thresh if not grad_min_thresh else grad_min_thresh
+        #access the config/params from class __init__ or merge function
+        flow_static_thresh = self.flow_static_threshold if not flow_static_thresh else flow_static_thresh
+        photo_static_thresh = self.photo_static_threshold if not photo_static_thresh else photo_static_thresh
+        grad_min_thresh = self.grad_min_threshold if not grad_min_thresh else grad_min_thresh
         huber_delta = self.huber_delta if not huber_delta else huber_delta
         iters = self.iters if not iters else iters
         ema_alpha = self.ema_alpha if not ema_alpha else ema_alpha
@@ -589,33 +655,51 @@ class DepthPosePipeline:
         # 1) VALID MASK (static & reliable) for s,b fit
         valid_mask = None
         if frames is not None and flows_fwd is not None:
-            gray = _to_gray(frames)  # (T,H,W)
-            vm = torch.ones((T,H,W), device=depthmap_vda.device, dtype=torch.bool)
-            for t in range(1, T):
-                # flow magnitude gate
-                mag = torch.linalg.norm(flows_fwd[t-1], dim=-1)  # (H,W)
-                m_static = (mag <= flow_static_thresh)
+            gray = self._to_gray(frames)                 # (T, H, W), float in [0,1]
+            T, H, W = gray.shape
+            vm = torch.ones((T, H, W), device=gray.device, dtype=torch.bool)
 
-                # photometric gate (if backward flow available)
-                if flows_bwd is not None:
-                    prev_warped_to_cur = _warp_prev_to_cur(gray[t-1], flows_bwd[t-1])  # (H,W)
-                    diff = (gray[t] - prev_warped_to_cur).abs()
-                    # normalize diff to [0,1] per-frame
-                    mx = max(diff.max().item(), self.epsilon)
-                    diff = diff / mx
-                    m_photo = (diff <= photo_static_thresh)
-                else:
-                    # fallback: no motion compensation, just allow photometric check to be disabled
-                    m_photo = torch.ones_like(m_static, dtype=torch.bool)
+            # ---- Flow-magnitude gate for frames 1..T-1 (uses forward flow t-1->t) ----
+            # flows_fwd: (T-1, H, W, 2)  -> per-pixel magnitude
+            mag = torch.linalg.norm(flows_fwd, dim=-1)   # (T-1, H, W)
+            m_static = (mag <= flow_static_thresh)       # (T-1, H, W)
 
-                # texture gate (avoid super-flat regions & reflections)
-                grad_mag = self._sobel_mag(gray[t]).detach()  # (H,W) in [0,1]
-                m_texture = (grad_mag >= grad_min_thresh)
+            # ---- Texture gate for frames 1..T-1 (Sobel on current frame) ----
+            # self._sobel_mag handles (T,H,W) and returns per-frame normalized grads
+            grad_mag_all = self._sobel_mag(gray)         # (T, H, W) in [0,1]
+            m_texture = (grad_mag_all[1:] >= grad_min_thresh)   # (T-1, H, W)
 
-                vm[t] = m_static & m_photo & m_texture
+            # ---- Optional photometric gate (batched) using backward flow t->t-1 ----
+            if flows_bwd is not None:
+                B = flows_bwd.shape[0]                  # B = T-1
+                # Build normalized sampling grid for all frames at once
+                yy, xx = torch.meshgrid(
+                    torch.arange(H, device=gray.device, dtype=flows_bwd.dtype),
+                    torch.arange(W, device=gray.device, dtype=flows_bwd.dtype),
+                    indexing="ij"
+                )
+                xx = xx.expand(B, H, W)
+                yy = yy.expand(B, H, W)
+                grid_x = (xx + flows_bwd[..., 0]) / max(W - 1, 1) * 2 - 1
+                grid_y = (yy + flows_bwd[..., 1]) / max(H - 1, 1) * 2 - 1
+                grid = torch.stack([grid_x, grid_y], dim=-1)  # (B, H, W, 2)
+            
+                prev = gray[:-1].unsqueeze(1)  # (B, 1, H, W)
+                prev_warped = F.grid_sample(prev, grid, mode="bilinear",
+                                            padding_mode="border", align_corners=True)[:, 0]  # (B,H,W)
+            
+                diff = (gray[1:] - prev_warped).abs()  # (B, H, W)
+                # per-frame normalization to [0,1]
+                mx = diff.view(B, -1).amax(dim=1, keepdim=True).clamp_min(self.epsilon).view(B, 1, 1)
+                diff_norm = diff / mx
+                m_photo = (diff_norm <= photo_static_thresh)  # (B, H, W)
+            else:
+                m_photo = torch.ones_like(m_static, dtype=torch.bool)
 
+            # ---- Combine gates (add & m_photo if you enable the commented block) ----
+            vm[1:] = m_static & m_texture & m_photo
             valid_mask = vm
-
+        
         # 2) GUIDANCE for guided low-pass
         guidance = frames if frames is not None else None
 
@@ -626,16 +710,16 @@ class DepthPosePipeline:
         )
 
         fused = self.per_frame_fuse(
-            vda_metric, depthmap_moge,
-            guidance=guidance, radius=radius, eps_frac=eps_frac,
-            var_window=var_window, tau=tau, edge_thresh=edge_thresh, clip=(0.1, 100.0)
+            vda_metric, moge_depth=depthmap_moge, flows_bwd=flows_bwd, clip=(0.1, 100.0)
         )
 
-        stable = self.temporal_stabilize(
-            fused, flows_fwd=flows_fwd, flows_bwd=flows_bwd, beta=beta
-        )
+        #TODO: potentially get temporal stabilization working
+        stable = None
+        # stable = self.temporal_stabilize(
+        #     fused, flows_fwd=flows_fwd, flows_bwd=flows_bwd, beta=beta
+        # )
 
-        return stable, fused, vda_metric, (s, b)
+        return fused
 
     def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
         for frame_file in tqdm(os.listdir(frame_path)):
@@ -663,11 +747,11 @@ class DepthPosePipeline:
                 video_name = video_name,
                 video_fps = video_fps
             )
-    
+
     def align_scale_shift(
         self,
         vda_depth: torch.Tensor,         # (T,H,W) in [0,1] relative
-        moge_depth: torch.Tensor,      # (T,H,W) metric (m)
+        moge_depth: torch.Tensor,        # (T,H,W) metric (m)
         valid_mask: Optional[torch.Tensor] = None,  # (T,H,W) bool; static/reliable pixels (optional)
         huber_delta: float = 0.05,
         iters: int = 6,
@@ -675,7 +759,8 @@ class DepthPosePipeline:
         clip: Tuple[float,float] = (0.1, 100.0),
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Robust IRLS per-frame fit of s,b in  Dv*s + b ≈ Dm. Then EWMA-smooth (s,b) over time.
+        Robust IRLS per-frame fit of s,b in Dv*s + b ≈ Dm (vectorized across frames).
+        Then EWMA-smooth (s,b) over time (vectorized, no per-frame loop).
         Returns:
         vda_metric: (T,H,W)
         s_all: (T,)
@@ -685,72 +770,88 @@ class DepthPosePipeline:
         T, H, W = vda_depth.shape
         device, dtype = vda_depth.device, vda_depth.dtype
 
-        s_list = []
-        b_list = []
-        s_prev = None
-        b_prev = None
+        # Flatten spatial dims: (T, N)
+        N = H * W
+        x = vda_depth.view(T, N)
+        y = moge_depth.view(T, N)
 
-        for t in range(T):
-            x = vda_depth[t].reshape(-1)
-            y = moge_depth[t].reshape(-1)
-            if valid_mask is not None:
-                m = valid_mask[t].reshape(-1).bool()
-            else:
-                m = torch.isfinite(x) & torch.isfinite(y)
+        # Valid pixels per frame
+        if valid_mask is not None:
+            m_bool = valid_mask.view(T, N).bool()
+        else:
+            m_bool = torch.isfinite(x) & torch.isfinite(y)
+        m = m_bool.float()                        # (T,N)
+        has_data = (m_bool.sum(dim=1) >= 3)       # (T,)
 
-            # IRLS (Huber)
-            s = torch.tensor(1.0, device=device, dtype=dtype)
-            b = torch.tensor(0.0, device=device, dtype=dtype)
+        # Initialize s,b per frame (as in original code)
+        s = torch.ones(T, 1, device=device, dtype=dtype)   # (T,1)
+        b = torch.zeros(T, 1, device=device, dtype=dtype)  # (T,1)
 
-            xm = x[m]; ym = y[m]
-            if xm.numel() >= 3:
-                ones = torch.ones_like(xm)
-                for _ in range(iters):
-                    r = s * xm + b - ym
-                    abs_r = r.abs()
-                    w = torch.ones_like(r)
-                    mask = abs_r > huber_delta
-                    w[mask] = (huber_delta / abs_r[mask])
+        # IRLS over all frames in parallel
+        for _ in range(iters):
+            r = s * x + b - y                   # (T,N)
+            abs_r = r.abs()
+            w = torch.ones_like(r)
+            mask_large = abs_r > huber_delta
+            # Huber weights
+            w[mask_large] = (huber_delta / (abs_r[mask_large] + 1e-12))
+            # Zero out invalid pixels
+            w = w * m
 
-                    wx = w * xm
-                    A11 = (wx * xm).sum()
-                    A12 = wx.sum()
-                    A22 = w.sum()
-                    rhs1 = (wx * ym).sum()
-                    rhs2 = (w * ym).sum()
+            # Weighted normal equation terms (per frame)
+            wx  = w * x
+            sum_wx2 = (wx * x).sum(dim=1)        # (T,)
+            sum_wx  =  wx.sum(dim=1)             # (T,)
+            sum_w   =  w.sum(dim=1)              # (T,)
+            sum_wxy = (wx * y).sum(dim=1)        # (T,)
+            sum_wy  = (w  * y).sum(dim=1)        # (T,)
 
-                    det = A11 * A22 - A12 * A12 + 1e-12
-                    s_new = ( A22 * rhs1 - A12 * rhs2) / det
-                    b_new = (-A12 * rhs1 + A11 * rhs2) / det
-                    if torch.isfinite(s_new) and torch.isfinite(b_new):
-                        s, b = s_new, b_new
+            det = sum_wx2 * sum_w - sum_wx * sum_wx + 1e-12
+            s_new = ( sum_w * sum_wxy - sum_wx * sum_wy) / det
+            b_new = (-sum_wx * sum_wxy + sum_wx2 * sum_wy) / det
 
-            # temporal EWMA smoothing
-            if s_prev is None:
-                s_smooth, b_smooth = s, b
-            else:
-                s_smooth = ema_alpha * s_prev + (1 - ema_alpha) * s
-                b_smooth = ema_alpha * b_prev + (1 - ema_alpha) * b
-            s_prev, b_prev = s_smooth, b_smooth
-            s_list.append(s_smooth)
-            b_list.append(b_smooth)
+            # Only update frames that have enough data; keep defaults otherwise
+            s = torch.where(has_data.view(T,1), s_new.view(T,1), s)
+            b = torch.where(has_data.view(T,1), b_new.view(T,1), b)
 
-        s_all = torch.stack(s_list)  # (T,)
-        b_all = torch.stack(b_list)  # (T,)
+        s_raw = s.view(T)   # (T,)
+        b_raw = b.view(T)   # (T,)
 
+        # -------- Vectorized EWMA over time (no per-frame loop) --------
+        # s_smooth[t] = ema_alpha * s_smooth[t-1] + (1-ema_alpha) * s_raw[t], s_smooth[0] = s_raw[0]
+        # Closed form: s_smooth[t] = (1-a) * a^t * cumsum(s_raw / a^k) + a^(t+1) * s_raw[0]
+        a = float(ema_alpha)
+        one_minus_a = 1.0 - a
+        idx = torch.arange(T, device=device, dtype=dtype)
+
+        a_pow_t   = (a ** idx)                    # (T,)
+        a_pow_tp1 = (a ** (idx + 1.0))            # (T,)
+        # Avoid division by zero if a == 0 (degenerate EMA -> s_smooth = s_raw)
+        if a == 0.0:
+            s_smooth = s_raw
+            b_smooth = b_raw
+        else:
+            z_s = s_raw / (a ** idx)              # (T,)
+            z_b = b_raw / (a ** idx)
+            csum_s = torch.cumsum(z_s, dim=0)     # (T,)
+            csum_b = torch.cumsum(z_b, dim=0)
+            s_smooth = one_minus_a * a_pow_t * csum_s + a_pow_tp1 * s_raw[0]
+            b_smooth = one_minus_a * a_pow_t * csum_b + a_pow_tp1 * b_raw[0]
+
+        s_all = s_smooth.to(dtype)
+        b_all = b_smooth.to(dtype)
+
+        # Apply to depth and clip
         vda_metric = (s_all.view(T,1,1) * vda_depth + b_all.view(T,1,1))
         vda_metric = self._safe_clip(vda_metric, *clip)
-        return vda_metric, s_all, b_all
 
+        return vda_metric, s_all, b_all
+    
     def per_frame_fuse(
         self,
         vda_metric: torch.Tensor,      # (T,H,W) after step1
         moge_depth: torch.Tensor,      # (T,H,W)
-        radius: int = 15,
-        eps_frac: float = 1e-3,
-        var_window: int = 5,
-        tau: float = 0.025,            # m^2 for variance->weight
-        edge_thresh: float = 0.08,
+        flows_bwd: torch.Tensor,
         clip: Tuple[float,float] = (0.1, 100.0),
     ) -> torch.Tensor:
         """
@@ -770,38 +871,98 @@ class DepthPosePipeline:
        
 
         # Guided bases
-        eps_v = _auto_eps_per_frame(vda_metric, eps_frac)  # (T,)
-        eps_m = _auto_eps_per_frame(moge_depth, eps_frac)  # (T,)
-        Bv = self._guided_filter_gray(vda_metric, g, radius, eps_v)  # (T,H,W)
-        Bm = self._guided_filter_gray(moge_depth, g, radius, eps_m)
+        eps_v = self._auto_eps_per_frame(vda_metric, self.eps_frac)  # (T,)
+        eps_m = self._auto_eps_per_frame(moge_depth, self.eps_frac)  # (T,)
+        Bv = self._guided_filter_gray(vda_metric, g, self.radius, eps_v)  # (T,H,W)
+        Bm = self._guided_filter_gray(moge_depth, g, self.radius, eps_m)
 
         # High-frequency detail from MoGE
         Hm = moge_depth - Bm  # (T,H,W)
+        # Hm = self._median_residual(Hm)
+        
+        # High frequency detail from VDA
+        # Hv = vda_metric - Bv
 
         # Temporal variance of MoGE (short window) -> weight W in [0,1]
-        var = torch.zeros_like(moge_depth)
-        half = var_window // 2
-        for t in range(T):
-            a = max(0, t - half)
-            b = min(T, t + half + 1)
-            seg = moge_depth[a:b]  # (len,H,W)
-            var[t] = seg.var(dim=0, unbiased=False)
-        W = torch.exp(-var / max(tau, 1e-8))
-
-
-        fused = self._safe_clip(Bv + W * Hm, *clip)
+        # var = torch.zeros_like(moge_depth)
+        # window_size = self.var_window // 2
+        # for t in range(T):
+        #     i = max(0, t - window_size)
+        #     j = min(T, t + window_size + 1)
+        #     seg = moge_depth[i:j]  # (len,H,W)
+        #     var[t] = seg.var(dim=0, unbiased=False)
+        var = moge_depth.unsqueeze(1).var(dim=1, unbiased=False)
+        W = torch.exp(-var / max(self.tau, self.epsilon))
+        Hm = self.smooth_residual_w_prev(Hm = W * Hm, flows_bwd=flows_bwd)
+        fused = self._safe_clip(Bv + Hm,*clip)
         return fused
+    
+    def _grid_from_flow(self, flows: torch.Tensor) -> torch.Tensor:
+        # flows_bwd: (B,H,W,2) t->t-1
+        B,H,W,_ = flows.shape
+        yy, xx = torch.meshgrid(
+            torch.arange(H, device=flows.device, dtype=flows.dtype),
+            torch.arange(W, device=flows.device, dtype=flows.dtype),
+            indexing="ij"
+        )
+        xx = xx.expand(B, H, W); yy = yy.expand(B, H, W)
+        gx = (xx + flows[..., 0]) / max(W-1, 1) * 2 - 1
+        gy = (yy + flows[..., 1]) / max(H-1, 1) * 2 - 1
+        return torch.stack([gx, gy], dim=-1).contiguous()  # (B,H,W,2)
+    
+    @torch.no_grad()
+    def smooth_residual_w_prev(self, Hm: torch.Tensor, flows_bwd: torch.Tensor = None) -> torch.Tensor:
+        """
+        Hm: (T,H,W) residual to inject
+        flows_bwd: (T-1,H,W,2) backward flows t->t-1 (optional)
+        out[0]=H0; out[1:] = beta*warp(H_{t-1}, F_bwd[t-1]) + (1-beta)*H_t
+        """
+        T,H,W = Hm.shape
+        out = Hm.clone()
+        if T == 1: return out
+        if flows_bwd is None:
+            out[1:] = beta * Hm[:-1] + (1 - beta) * Hm[1:]
+            return out
+        grid = self._grid_from_flow(flows_bwd)      # (T-1,H,W,2)
+        prev = Hm[:-1].unsqueeze(1).contiguous()   # (T-1,1,H,W)
+        prev_warp = F.grid_sample(prev, grid, mode="bilinear",
+                                padding_mode="border", align_corners=True)[:,0]  # (T-1,H,W)
+        out[1:] = self.beta * prev_warp + (1 - self.beta) * Hm[1:]
+        return out
+
+    def _median_residual(self, Hm: torch.Tensor) -> torch.Tensor:
+        """3-frame temporal median, vectorized (pad at ends by replication). x: (T,H,W)."""
+        T,H,W = Hm.shape
+        Hm_pad = torch.cat([Hm[[0]], Hm, Hm[[-1]]], dim=0)         # (T+2,H,W)
+        trip = torch.stack([Hm_pad[:-2], Hm_pad[1:-1], Hm_pad[2:]], dim=0)  # (3,T,H,W)
+        return trip.median(dim=0).values 
+
+    def _auto_eps_per_frame(self, depth: torch.Tensor, eps_frac: float) -> torch.Tensor: 
+        """ eps per frame = eps_frac * (range_2-98%)^2 depth: (T,H,W) -> (T,) """ 
+        T, H, W = depth.shape 
+        q02 = torch.nanquantile(depth.view(T, -1), 0.02, dim=1)
+        q98 = torch.nanquantile(depth.view(T, -1), 0.98, dim=1)
+        rng = torch.clamp(q98 - q02, min=1e-6)
+        return (eps_frac * (rng ** 2)).to(depth.dtype).to(depth.device) # (T,)
 
     def _sobel_mag(self, g: torch.Tensor) -> torch.Tensor:
-        # g: (T,H,W) gray
-        T,H,W = g.shape
-        kx = torch.tensor([[-1,0,1],[-2,0,2],[-1,0,1]], device=g.device, dtype=g.dtype).view(1,1,3,3)
-        ky = torch.tensor([[-1,-2,-1],[0,0,0],[1,2,1]], device=g.device, dtype=g.dtype).view(1,1,3,3)
-        gx = F.conv2d(g.view(T,1,H,W), kx, padding=1).view(T,H,W)
-        gy = F.conv2d(g.view(T,1,H,W), ky, padding=1).view(T,H,W)
-        mag = torch.sqrt(gx**2 + gy**2)
-        # normalize per-frame
-        d = torch.clamp(mag.view(T,-1).max(dim=1).values, min=1e-8).view(T,1,1)
+        """
+        Compute per-frame Sobel gradient magnitude, normalized to [0,1].
+        Accepts (H,W) single frame or (T,H,W) batch; returns same rank/shape.
+        """
+        # Sobel kernels (on same device/dtype as g)
+        kx = torch.tensor([[-1,0,1],[-2,0,2],[-1,0,1]],
+                        device=g.device, dtype=g.dtype).view(1,1,3,3)
+        ky = torch.tensor([[-1,-2,-1],[0,0,0],[1,2,1]],
+                        device=g.device, dtype=g.dtype).view(1,1,3,3)
+
+        T, H, W = g.shape
+        g = g.view(T,1,H,W)
+        gx = F.conv2d(g, kx, padding=1)
+        gy = F.conv2d(g, ky, padding=1)
+        mag = torch.sqrt(gx*gx + gy*gy).view(T, H, W)
+        # per-frame normalization
+        d = torch.clamp(mag.view(T, -1).amax(dim=1), min=self.epsilon).view(T,1,1)
         return mag / d
    
     def temporally_stabilize(
@@ -841,6 +1002,39 @@ class DepthPosePipeline:
 
         return out
     
+    def _box_filter_2d(self, x: torch.Tensor, r: int) -> torch.Tensor:
+        """
+        Fast box filter via integral image (summed-area table).
+        x: (T,H,W) -> returns (T,H,W) mean over (2r+1)x(2r+1) with zero-padding semantics.
+        """
+        assert x.ndim == 3, "Expected x of shape (T,H,W)"
+        T, H, W = x.shape
+        k = 2 * r + 1
+
+        # integral image with a 1-pixel zero pad (top/left)
+        x_pad = F.pad(x, (1, 0, 1, 0))           # (T,H+1,W+1)
+        ii = x_pad.cumsum(dim=1).cumsum(dim=2)   # (T,H+1,W+1)
+
+        # window bounds (clipped), then +1 for integral indexing on the "max" side
+        ys = torch.arange(H, device=x.device)
+        xs = torch.arange(W, device=x.device)
+        y0 = (ys - r).clamp_(0, H-1)
+        y1 = (ys + r).clamp_(0, H-1) + 1
+        x0 = (xs - r).clamp_(0, W-1)
+        x1 = (xs + r).clamp_(0, W-1) + 1
+
+        # use (H,1) and (1,W) index shapes to avoid creating a singleton batch dim
+        y0i = y0.view(H, 1); y1i = y1.view(H, 1)
+        x0i = x0.view(1, W); x1i = x1.view(1, W)
+
+        # 4-corner sums -> (T,H,W) directly
+        A = ii[:, y1i, x1i]   # (T,H,W)
+        B = ii[:, y0i, x1i]   # (T,H,W)
+        C = ii[:, y1i, x0i]   # (T,H,W)
+        D = ii[:, y0i, x0i]   # (T,H,W)
+        box_sum = A - B - C + D
+        return box_sum / float(k * k)
+
     def _guided_filter_gray(self, p: torch.Tensor, I: torch.Tensor, r: int, eps: torch.Tensor) -> torch.Tensor:
         """
         Classic guided filter (He et al.) per-frame with gray guidance.
@@ -849,10 +1043,10 @@ class DepthPosePipeline:
         Returns (T,H,W).
         """
         T, H, W = p.shape
-        mean_I = _box_filter_2d(I, r)
-        mean_p = _box_filter_2d(p, r)
-        corr_I = _box_filter_2d(I * I, r)
-        corr_Ip = _box_filter_2d(I * p, r)
+        mean_I = self._box_filter_2d(I, r)
+        mean_p = self._box_filter_2d(p, r)
+        corr_I = self._box_filter_2d(I * I, r)
+        corr_Ip = self._box_filter_2d(I * p, r)
 
         var_I = corr_I - mean_I * mean_I
         cov_Ip = corr_Ip - mean_I * mean_p
@@ -861,38 +1055,65 @@ class DepthPosePipeline:
         a = cov_Ip / (var_I + eps.view(T,1,1))
         b = mean_p - a * mean_I
 
-        mean_a = _box_filter_2d(a, r)
-        mean_b = _box_filter_2d(b, r)
+        mean_a = self._box_filter_2d(a, r)
+        mean_b = self._box_filter_2d(b, r)
         q = mean_a * I + mean_b
         return q
     
-    def _to_cv_gray(self, img_hwc_float):
-        im = img_hwc_float.detach().cpu().numpy()
-        if im.max() <= 1.0: 
-            im = (im * 255.0).astype(np.uint8)
-        else:               
-            im = im.astype(np.uint8)
-        return cv2.cvtColor(im, cv2.COLOR_RGB2GRAY)
+    @torch.no_grad()
+    def build_optical_flow_raft(self, frames:torch.Tensor):
+        """
+        frames: (T,H,W,3) or (T,3,H,W), float in [0..1] or [0..255]
+        returns:
+        flows_fwd: (T-1,H,W,2)   t-1 -> t
+        flows_bwd: (T-1,H,W,2)   t   -> t-1
+        """
+        # Normalize to [0,1], keep device
+        frames_device = frames.device
+        if frames.shape[1] != 3 and frames.shape[-1] == 3:
+            #(T,H,W,3) -> (T,3,H,W)
+            frames = frames.permute(0,3,1,2).contiguous()
+        if frames.device != self.raft_device:
+            #align frame and RAFT model devices
+            frames = frames.to(self.raft_device)
+        if frames.max() > 1.5:
+            frames = frames / 255.0
 
-    def cv_flow_tvl1(self, img1_hwc, img2_hwc):
-        g1 = self._to_cv_gray(img1_hwc)
-        g2 = self._to_cv_gray(img2_hwc)
-        tvl1 = cv2.optflow.DualTVL1OpticalFlow_create()
-        flow = tvl1.calc(g1, g2, None)  # HxWx2, float32, (dx,dy) in pixels
-        return torch.from_numpy(flow).to(img1_hwc.device)
+        # To BCHW
+        T, C, H, W = frames.shape
+        if T < 2:
+            raise ValueError("Need at least 2 frames for optical flow")
 
-    def build_flows_opencv(self, frames):  # frames: (T,H,W,3) float [0..1] or [0..255]
-        print('STARTING OPT FLOW')
-        pdb.set_trace()
-        if frames.shape[1]==3: #reshape (B,C,H,W) to (B,H,W,C)
-            frames = frames.permute(0,2,3,1)
-        T,H,W,_ = frames.shape
-        fwd, bwd = [], []
-        for t in range(1, T):
-            f_fwd = self.cv_flow_tvl1(frames[t-1],frames[t])
-            f_bwd = self.cv_flow_tvl1(frames[t],frames[t-1])
-            fwd.append(f_fwd); bwd.append(f_bwd)
-        return torch.stack(fwd,0), torch.stack(bwd,0)
+        # Prepare batch pairs for all consecutive frames
+        img_pre = frames[:-1].contiguous().to(self.raft_device)  # (T-1,3,H,W)
+        img_post = frames[1:].contiguous().to(self.raft_device)   # (T-1,3,H,W)
+
+        # # One forward pass to get BOTH directions: concat pairs along batch
+        # # First half: forward (t-1 -> t); second half: backward (t -> t-1)
+        # img_fwd = torch.cat([img_pre, img_post], dim=0).to(self.raft_device)  # (2*(T-1),3,H',W')
+        # img_bwd = torch.cat([img_post, img_pre], dim=0).to(self.raft_device)
+
+        # # Run RAFT once (returns list of flows at multiple iterations; get last most refined flow estimates)
+        # flows_output = self.raft_model(img_fwd, img_bwd)[-1] # list of (B,2,H',W')
+        # # Move back to original device
+        # flows_output = flows_output.to(frames_device)
+        # flow_fwd, flow_bwd = flows_output[:img_pre.shape[0]], flows_output[img_pre.shape[0]:]  # first B flows are fwd, last B are bwd
+
+        #First compute forward flows + move back to original device
+        flow_fwd = self.raft_model(img_pre, img_post)[-1] # list of (B,2,H',W')
+        flow_fwd = flow_fwd.to(frames_device)
+        #Next compute backward flows + move back to original device
+        flow_bwd = self.raft_model(img_post, img_pre)[-1] # list of (B,2,H',W')
+        flow_bwd = flow_bwd.to(frames_device)
+
+        #Remove img_pre and img_post from device
+        img_pre = img_pre.cpu()
+        img_post = img_post.cpu()
+
+        # Permute to (B,H,W,2) to match your downstream API & TV-L1 outputs
+        flows_fwd = flow_fwd.permute(0, 2, 3, 1).contiguous().to(torch.float32)  # (T-1,H,W,2)
+        flows_bwd = flow_bwd.permute(0, 2, 3, 1).contiguous().to(torch.float32)
+        return flows_fwd, flows_bwd
 
     def _auto_eps_per_frame(self, depth: torch.Tensor, eps_frac: float) -> torch.Tensor:
         """

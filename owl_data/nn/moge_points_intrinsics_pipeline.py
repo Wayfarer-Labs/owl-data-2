@@ -158,11 +158,11 @@ class MoGePointsIntrinsicsPipeline:
             )
 
         if self.intrinsics_only:
-            return {'intrinsics': [out.get('intrinsics') for out in output]}
+            return {'intrinsics': torch.stack([out.get('intrinsics') for out in output],0).cpu()}
         else:
             # Aggregate outputs from all frames
             return {
-                'points': [out.get('points', None) for out in output], 
-                'depth': torch.Tensor([out.get('depth', None) for out in output]), 
-                'intrinsics': torch.Tensor([out.get('intrinsics', None) for out in output])
+                'points': torch.stack([out.get('points', None) for out in output],0).cpu(), 
+                'depth': torch.stack([out.get('depth', None) for out in output], 0).cpu(), 
+                'intrinsics': torch.stack([out.get('intrinsics', None) for out in output],0).cpu()
             }

@@ -151,7 +151,7 @@ class PoseKeypointPipeline:
         flattened_frame_data = []
         
         for i, (frame_nested, frame_flattened) in enumerate(self.process_video(frames=frames)):
-            nested_frame_data.append(frame_nested)
-            flattened_frame_data.append(frame_flattened)
+            nested_frame_data.append(frame_nested.cpu())
+            flattened_frame_data.append(frame_flattened.cpu())
         
         return nested_frame_data, torch.nested.nested_tensor(flattened_frame_data)

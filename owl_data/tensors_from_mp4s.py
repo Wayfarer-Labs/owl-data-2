@@ -34,7 +34,38 @@ def to_tensor(frames, output_size):
     return frames
 
 @ray.remote
-def decode_video(path, chunk_size, output_size, stride):
+def decode_video_fps_aware(path, chunk_size, output_size, target_fps=15):
+    vr = VideoReader(path)
+    
+    # Calculate sampling stride based on target FPS
+    original_fps = vr.get_avg_fps() if hasattr(vr, 'get_avg_fps') else 30
+    stride = max(round(original_fps / target_fps), 1)
+    
+    frames = []
+    n_frames = 0
+    split_ind = 0
+    
+    # Sample frames with stride instead of processing all
+    for i in tqdm(range(0, len(vr), stride)):
+        frame = vr[i]
+        frames.append(frame.asnumpy())
+        
+        n_frames += 1
+        if n_frames >= chunk_size:
+            chunk = to_tensor(frames, output_size)
+            torch.save(chunk, os.path.join(split_dir, f"{split_ind:08d}_rgb.pt"))
+            frames = []
+            n_frames = 0
+            split_ind += 1
+            del chunk
+    
+    # Save any remaining frames
+    if frames:
+        chunk = to_tensor(frames, output_size)
+        torch.save(chunk, os.path.join(split_dir, f"{split_ind:08d}_rgb.pt"))
+
+@ray.remote
+def decode_video(path, chunk_size, output_size, stride=1):
     split_dir = os.path.dirname(path)
     split_dir = os.path.join(split_dir, "splits")
     os.makedirs(split_dir, exist_ok = True)

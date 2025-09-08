@@ -65,7 +65,7 @@ def dataset_from_path(path: Path) -> Datasets:
         case _:                                             raise TypeError(f"Unsupported path: {path}")
 
 
-FAILED_LOG = Path("failed_videos.txt")
+FAILED_LOG = Path("/mnt/data/sami/failed_videos.txt")
 
 
 @ray.remote

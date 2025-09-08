@@ -243,9 +243,7 @@ def all_rgb_to_pose(
                 if res["ok"]:
                     print(f"Processed {res['path']} -> {res['saved_count']} chunks")
                     try:
-
-                        with HAS_POSE_LOG.open("a") as f:
-                            f.write(res["path"] + "\n")
+                        with HAS_POSE_LOG.open("a") as f: f.write(res["path"] + "\n")
                     except Exception as e:
                         msg = f"[WARN] Could not write to {HAS_POSE_LOG}: {e}"
                         print(msg)

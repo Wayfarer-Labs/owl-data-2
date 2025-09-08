@@ -12,3 +12,4 @@ ray
 python-dotenv
 boto3
 zmq
+ultralytics

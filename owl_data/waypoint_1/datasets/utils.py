@@ -110,10 +110,14 @@ def peer_chunks(
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM,
 ) -> int:
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        num_chunks = ceil(int(stream.duration * stream.time_base / stride_sec) / chunk_size)
-        return num_chunks
+    try: 
+        with av.open(str(path)) as container:
+            stream = container.streams.video[0]
+            num_chunks = ceil(int(stream.duration * stream.time_base / stride_sec) / chunk_size)
+            return num_chunks
+    except Exception as e:
+        print(f'Error getting number of chunks for {path}: {e}')
+        return int(1e10) # some big number so that it will be processed
 
 
 def process_video_seek_mp4_or_webm(

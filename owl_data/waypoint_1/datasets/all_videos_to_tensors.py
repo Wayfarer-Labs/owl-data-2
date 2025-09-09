@@ -170,9 +170,6 @@ def all_videos_to_tensors(
     ray.shutdown()
     print(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
     print(f"Failures (if any) recorded in: {FAILED_LOG.resolve()}")
-    
-    ray.shutdown()
-    print(f'Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos')
 
 
 def main():

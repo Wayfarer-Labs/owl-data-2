@@ -19,4 +19,5 @@ run: |
   venv/bin/python owl_data/waypoint_1/datasets/all_videos_to_tensors.py \
     --num_cpus 64 \
     --node_rank ${SKYPILOT_NODE_RANK} \
-    --num_nodes $SKYPILOT_NUM_NODES
+    --num_nodes $SKYPILOT_NUM_NODES \
+    --datasets mkif

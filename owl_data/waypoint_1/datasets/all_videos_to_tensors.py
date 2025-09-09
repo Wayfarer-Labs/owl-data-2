@@ -66,9 +66,9 @@ def dataset_from_path(path: Path) -> Datasets:
 
 
 FAILED_LOG = Path("/mnt/data/sami/failed_videos.txt")
+def _is_within(x, lower, upper): return lower <= x <= upper
 
-
-@ray.remote
+# @ray.remote
 def process(
     path: Path,
     stride_sec: float,
@@ -84,16 +84,8 @@ def process(
         outdir.mkdir(parents=True, exist_ok=True)
 
         saved = []
-        chunks_to_write: list[int] = utils.peer_chunks(path, stride_sec, chunk_size)
-        
-        # if all the chunks exist, don't write anything unless specified
-        if all([
-            (outdir / f"{chunk:08d}_rgb.pt").exists()
-            for chunk in chunks_to_write
-        ]) and not force_overwrite:
-            return {"path": str(path), "ok": True, "saved_count": len(saved), "saved": saved, "error": None}
 
-        for i, chunk in enumerate(utils.process_video_seek(path, stride_sec, chunk_size)):
+        for i, chunk in enumerate(utils.process_video_chunks(path, stride_sec, chunk_size)):
             fp = outdir / f"{i:08d}_rgb.pt"
             if not force_overwrite and fp.exists(): continue
             torch.save(chunk, fp)
@@ -107,19 +99,42 @@ def process(
         tb_full = traceback.format_exc(limit=3)
         return {"path": str(path), "ok": False, "saved_count": 0, "saved": [], "error": f"{err} | {tb} | {tb_full}", "failed_log": FAILED_LOG}
 
+def filter_processed_videos(all_video_paths: Generator[Path, None, None], stride_sec: float, chunk_size: int, force_overwrite: bool) -> Generator[Path, None, None]:
+    
+    for path in all_video_paths:
+        if dataset_from_path(path) == 'comma2k19':
+            print(f'Comma2k19 does not give video duration so we cannot filter for processed videos. Skipping filtering for Comma2k19')
+            yield path
+            continue
+    
+        outdir = output_path(path)
+        num_chunks: int = utils.peer_chunks(path, stride_sec, chunk_size)
+        num_exist_chunks: int = sum([int((outdir / f"{i:08d}_rgb.pt").exists()) for i in range(num_chunks)])
+        # if all the chunks exist, don't write anything unless specified
+        if _is_within(num_exist_chunks, num_chunks-1, num_chunks) and not force_overwrite:
+            print(f'Skipping {path} because {num_exist_chunks=} chunks already exist out of {num_chunks=}')
+            continue
+        
+        yield path
+
+
 
 def all_videos_to_tensors(
     datasets: list[Datasets],
     num_cpus: int = os.cpu_count(),
     num_nodes: int = 1,
     node_rank: int = 0,
+    chunk_size: int = 512,
     force_overwrite: bool = False,
 ) -> None:
     ray.init(num_cpus=num_cpus)
     # sort just to force a deterministic ordering
     all_video_paths = sorted(
         itertools.chain(
-        *[video_paths(dataset) for dataset in datasets]
+        *[
+            filter_processed_videos(video_paths(dataset), STRIDE_SEC[dataset], chunk_size, force_overwrite)
+            for dataset in datasets
+        ]
     ))
     # stride by num_nodes starting from node-rank. e.g., rank 1 with 8 nodes:
     # 1, 9, 17 ...
@@ -129,6 +144,7 @@ def all_videos_to_tensors(
         process.remote(
             path,
             STRIDE_SEC[dataset_from_path(path)],
+            chunk_size=chunk_size,
             force_overwrite=force_overwrite,
         )
         for path in local_video_paths
@@ -165,6 +181,7 @@ def main():
     args.add_argument('--num_cpus', type=int, default=os.cpu_count())
     args.add_argument('--num_nodes', type=int, default=1)
     args.add_argument('--node_rank', type=int, default=0)
+    args.add_argument('--chunk_size', type=int, default=512)
     args.add_argument('--force_overwrite', action='store_true')
     args = args.parse_args()
     all_videos_to_tensors(
@@ -172,10 +189,14 @@ def main():
         num_cpus=args.num_cpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,
+        chunk_size=args.chunk_size,
         force_overwrite=args.force_overwrite,
     )
 
 def test():
+    path = Path('/mnt/data/waypoint_1/datasets/MKIF/videos/JmKzpYtnpb0.mp4')
+    process(path, 0.5, force_overwrite=False)
+
     local_video_paths = ['/mnt/data/waypoint_1/datasets/MKIF/videos/-6dvhAflfbc.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/-TenhotzKlQ.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/-XeThFZN8mc.webm', '/mnt/data/waypoint_1/datasets/MKIF/videos/00N3siEEqsQ.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/02ciFYAMrfw.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0RpTykaCVNQ.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0_qbSUGNC-M.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0a7pZaanATU.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0hPBgw_wzZI.mp4', '/mnt/data/waypoint_1/datasets/MKIF/videos/0piwAogCynU.webm']
     local_video_paths = [Path(path) for path in local_video_paths]
     hevc = [Path('/mnt/data/waypoint_1/datasets/comma2k19/processed/Chunk_1/b0c9d2329ad1606b|2018-08-14--20-41-07/9/video.hevc')]
@@ -190,5 +211,5 @@ def test():
     list(process(local_video_paths[7], 0.5, force_overwrite=True))
 
 if __name__ == '__main__':
-    # test()
     main()
+    # test()

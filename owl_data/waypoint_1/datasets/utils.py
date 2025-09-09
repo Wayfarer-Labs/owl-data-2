@@ -4,6 +4,7 @@ import numpy as np
 import av
 import os
 from typing import Generator
+from math import ceil
 import torchvision.transforms as T
 import cv2
 
@@ -93,7 +94,7 @@ def _to_16_9_crop_fn(frame_chw: torch.Tensor) -> callable:
     
     return transform
 
-def process_video_seek(
+def process_video_chunks(
     path: Path,
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM,
@@ -108,10 +109,11 @@ def peer_chunks(
     path: Path,
     stride_sec: float = 5.0,
     chunk_size: int = CHUNK_FRAME_NUM,
-) -> list[int]:
+) -> int:
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
-        return list(range(0, int(stream.duration * stream.time_base), stride_sec * stream.time_base))
+        num_chunks = ceil(int(stream.duration * stream.time_base / stride_sec) / chunk_size)
+        return num_chunks
 
 
 def process_video_seek_mp4_or_webm(

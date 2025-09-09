@@ -68,7 +68,7 @@ def dataset_from_path(path: Path) -> Datasets:
 FAILED_LOG = Path("/mnt/data/sami/failed_videos.txt")
 def _is_within(x, lower, upper): return lower <= x <= upper
 
-# @ray.remote
+@ray.remote
 def process(
     path: Path,
     stride_sec: float,

@@ -84,6 +84,15 @@ def process(
         outdir.mkdir(parents=True, exist_ok=True)
 
         saved = []
+        chunks_to_write: list[int] = utils.peer_chunks(path, stride_sec, chunk_size)
+        
+        # if all the chunks exist, don't write anything unless specified
+        if all([
+            (outdir / f"{chunk:08d}_rgb.pt").exists()
+            for chunk in chunks_to_write
+        ]) and not force_overwrite:
+            return {"path": str(path), "ok": True, "saved_count": len(saved), "saved": saved, "error": None}
+
         for i, chunk in enumerate(utils.process_video_seek(path, stride_sec, chunk_size)):
             fp = outdir / f"{i:08d}_rgb.pt"
             if not force_overwrite and fp.exists(): continue
@@ -163,7 +172,7 @@ def main():
         num_cpus=args.num_cpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,
-        force_overwrite=True,
+        force_overwrite=args.force_overwrite,
     )
 
 def test():

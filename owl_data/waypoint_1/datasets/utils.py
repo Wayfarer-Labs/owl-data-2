@@ -104,6 +104,16 @@ def process_video_seek(
         case _: raise NotImplementedError(f"Unsupported extension: {path.suffix}")
 
 
+def peer_chunks(
+    path: Path,
+    stride_sec: float = 5.0,
+    chunk_size: int = CHUNK_FRAME_NUM,
+) -> list[int]:
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        return list(range(0, int(stream.duration * stream.time_base), stride_sec * stream.time_base))
+
+
 def process_video_seek_mp4_or_webm(
     path: Path,
     stride_sec: float = 5.0,

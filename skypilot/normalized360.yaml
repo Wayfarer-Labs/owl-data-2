@@ -20,4 +20,5 @@ run: |
     --num_cpus 64 \
     --node_rank ${SKYPILOT_NODE_RANK} \
     --num_nodes $SKYPILOT_NUM_NODES \
-    --datasets mkif
+    --datasets mkif \
+    --video_paths_file remaining_mkif.txt

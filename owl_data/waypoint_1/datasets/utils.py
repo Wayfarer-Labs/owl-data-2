@@ -117,7 +117,7 @@ def peer_chunks(
             return num_chunks
     except Exception as e:
         print(f'Error getting number of chunks for {path}: {e}')
-        return int(1e10) # some big number so that it will be processed
+        return None
 
 
 def process_video_seek_mp4_or_webm(

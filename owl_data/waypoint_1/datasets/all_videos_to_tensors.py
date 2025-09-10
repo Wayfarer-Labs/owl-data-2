@@ -108,7 +108,12 @@ def filter_processed_videos(all_video_paths: Generator[Path, None, None], stride
             continue
     
         outdir = output_path(path)
-        num_chunks: int = utils.peer_chunks(path, stride_sec, chunk_size)
+        num_chunks: int | None = utils.peer_chunks(path, stride_sec, chunk_size)
+        if not num_chunks:
+            print(f'Peering num chunks failed, including path')
+            yield path
+            continue
+
         num_exist_chunks: int = sum([int((outdir / f"{i:08d}_rgb.pt").exists()) for i in range(num_chunks)])
         # if all the chunks exist, don't write anything unless specified
         if _is_within(num_exist_chunks, num_chunks-1, num_chunks) and not force_overwrite:
@@ -117,10 +122,13 @@ def filter_processed_videos(all_video_paths: Generator[Path, None, None], stride
         
         yield path
 
+def split_by_rank(video_paths: list[Path], num_nodes: int, node_rank: int) -> list[Path]:
+    return [path for i, path in enumerate(video_paths) if i % num_nodes == node_rank]
 
 
 def all_videos_to_tensors(
     datasets: list[Datasets],
+    video_paths_file: str | None,
     num_cpus: int = os.cpu_count(),
     num_nodes: int = 1,
     node_rank: int = 0,
@@ -129,16 +137,22 @@ def all_videos_to_tensors(
 ) -> None:
     ray.init(num_cpus=num_cpus)
     # sort just to force a deterministic ordering
-    all_video_paths = sorted(
-        itertools.chain(
-        *[
-            filter_processed_videos(video_paths(dataset), STRIDE_SEC[dataset], chunk_size, force_overwrite)
-            for dataset in datasets
-        ]
-    ))
+    if video_paths_file:
+        with open(video_paths_file, 'r') as f:
+            all_video_paths = [Path(path.strip()) for path in f.readlines()]
+            all_video_paths = [path for path in all_video_paths if dataset_from_path(path) in datasets]
+            all_video_paths = sorted(all_video_paths)
+    else:
+        all_video_paths = sorted(
+            itertools.chain(
+            *[
+                filter_processed_videos(video_paths(dataset), STRIDE_SEC[dataset], chunk_size, force_overwrite)
+                for dataset in datasets
+            ]
+        ))
     # stride by num_nodes starting from node-rank. e.g., rank 1 with 8 nodes:
     # 1, 9, 17 ...
-    local_video_paths = all_video_paths[node_rank::num_nodes]
+    local_video_paths = split_by_rank(all_video_paths, num_nodes, node_rank)
 
     futures = [
         process.remote(
@@ -172,9 +186,25 @@ def all_videos_to_tensors(
     print(f"Failures (if any) recorded in: {FAILED_LOG.resolve()}")
 
 
+def hours_remaining(video_paths: list[Path]) -> float:
+    import ffmpeg
+    unknown_duration_paths = []
+    total_hr = 0
+    for path in video_paths:
+        info = ffmpeg.probe(path)
+        duration = float(info['streams'][0].get('duration', 0))
+        if duration == 0:
+            unknown_duration_paths.append(path)
+            continue
+        total_hr += duration
+    print(f'{len(unknown_duration_paths)} videos with unknown duration: {unknown_duration_paths}')
+    return total_hr / 3600
+
+
 def main():
     args = argparse.ArgumentParser()
-    args.add_argument('--datasets', type=str, nargs='+', default=['epic_kitchens_100', 'comma2k19', 'egoexplore', 'kinetics700', 'mkif'])
+    args.add_argument('--datasets', type=str, nargs='+', default=['mkif', 'egoexplore', 'kinetics700', 'comma2k19', 'epic_kitchens_100'])
+    args.add_argument('--video_paths_file', type=str, default=None)
     args.add_argument('--num_cpus', type=int, default=os.cpu_count())
     args.add_argument('--num_nodes', type=int, default=1)
     args.add_argument('--node_rank', type=int, default=0)
@@ -183,6 +213,7 @@ def main():
     args = args.parse_args()
     all_videos_to_tensors(
         datasets=args.datasets,
+        video_paths_file=args.video_paths_file,
         num_cpus=args.num_cpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,

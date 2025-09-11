@@ -42,14 +42,13 @@ def find_all_tensor_files(root_dir: str) -> List[str]:
     tensor_files = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for filename in filenames:
-            # Support both our caption tensors and existing 1x tensors
-            if filename.endswith('_caption_rgb.pt') or filename.endswith('_rgb.pt'):
+            if filename.endswith('_rgb.pt'):
                 tensor_files.append(os.path.join(dirpath, filename))
     return sorted(tensor_files)
 
 def load_tensor_file(tensor_path: str) -> torch.Tensor:
     try:
-        tensor = torch.load(tensor_path, map_location='cpu')
+        tensor = torch.load(tensor_path, map_location='cpu', mmap=True)
         return tensor
     except Exception as e:
         print(f"Error loading tensor {tensor_path}: {e}")
@@ -307,6 +306,7 @@ class CaptionWorker:
             
             for start_frame, end_frame, frame_indices in windows:
                 window_frames = tensor[frame_indices]
+                window_frames = (window_frames.float() / 255.0) # -> [0,1]
                 caption = generate_caption_for_window(window_frames, self.model, self.processor, self.process_vision_info, self.prompt_template)
                 window_data = {
                     "start_frame": start_frame,

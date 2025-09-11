@@ -10,6 +10,7 @@ from owl_data.nn.owl_image_vae import BatchedEncodingPipe
 import ray
 import os
 import torch
+import tqdm
 
 @ray.remote(num_gpus=1)
 class EncodingWorker:
@@ -28,24 +29,57 @@ class EncodingWorker:
         self.pipe = BatchedEncodingPipe(vae_cfg_path, vae_ckpt_path, vae_batch_size)
 
     def __call__(self):
-        # Just process one batch for now, as per instructions
-        for item in self.loader:
-            # Get the latent
-            frames = item["frames"]  # [n, h, w, c], uint8
-            frames = torch.from_numpy(frames).float() / 255.0 * 2.0 - 1.0  # [n, h, w, c]
-            frames = frames.permute(0, 3, 1, 2)  # -> [n, c, h, w]
-            frames = frames.to(torch.bfloat16)
+        import time
+        from tqdm import tqdm
 
-            latents = self.pipe(frames.cuda()).cpu()
-            print("latents shape:", latents.shape)
+        total_frames = 0
+        t0 = time.time()
+        pbar = None
+        if self.rank == 0:
+            pbar = tqdm(
+                total=0,
+                desc="Frames Processed (all workers, est)",
+                unit="frames",
+                dynamic_ncols=True,
+                smoothing=0.1,
+            )
+            last_update = time.time()
+            last_frames = 0
+
+        for item in self.loader:
+            frames = item["frames"]  # [n, h, w, c], uint8
+            n_frames = frames.shape[0]
+            total_frames += n_frames
+
+            # tqdm update only on rank 0
+            if self.rank == 0:
+                # Estimate total frames processed across all workers
+                est_total = total_frames * self.world_size
+                now = time.time()
+                elapsed = now - t0
+                fps = est_total / elapsed if elapsed > 0 else 0
+                pbar.total = None  # no fixed total
+                pbar.n = est_total
+                pbar.set_postfix({"fps": f"{fps:.1f}"})
+                pbar.refresh()
+
+            frames = torch.from_numpy(frames).cuda().bfloat16() / 255.0 * 2.0 - 1.0  # [n, h, w, c]
+            frames = frames.permute(0, 3, 1, 2)  # -> [n, c, h, w]
+
+            latents = self.pipe(frames).cpu()
 
             # Metadata and subsequently pathing
-            # New vid path will be based on original path + splits + chunk_idx
             metadata = item["metadata"]
             chunk_idx = metadata['idx_in_vid']
             vid_dir = metadata['vid_dir']
+            os.makedirs(os.path.join(vid_dir,"splits"), exist_ok=True)
             output_path = os.path.join(vid_dir,"splits",f"{chunk_idx:06d}_rgblatent.pt")
             torch.save(latents, output_path)
+
+            del frames, latents, item
+
+        if self.rank == 0 and pbar is not None:
+            pbar.close()
 
 if __name__ == "__main__":
     import argparse

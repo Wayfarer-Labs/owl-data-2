@@ -59,6 +59,7 @@ def extract_frames(video_path, output_path, frame_skip):
 
 class VideoReader:
     def __init__(self, video_path, frame_skip=1):
+        # Frame skip is stride
         self.video_path = video_path
         self.frame_skip = frame_skip
         self.container = av.open(video_path)
@@ -79,7 +80,7 @@ class VideoReader:
         Iterates over frames, returned array is HWC, RGB, uint8 np array
         """
         for frame in self._frame_iter:
-            if self._frame_count % (self.frame_skip + 1) == 0:
+            if self._frame_count % self.frame_skip == 0:
                 frame_array = frame.to_ndarray(format='rgb24')
                 self._frame_count += 1
                 return frame_array
@@ -98,4 +99,8 @@ if __name__ == "__main__":
     reader = VideoReader(vid_path)
     for frame in reader:
         print(frame.shape)
+        import numpy as np
+        print(f"dtype: {frame.dtype}")
+        print(f"min: {frame.min()}, max: {frame.max()}")
+        print(f"mean: {frame.mean() if np.issubdtype(frame.dtype, np.floating) else 'N/A (uint8)'}")
         break

@@ -295,3 +295,11 @@ def process_video_seek_hevc(
     cap.release()
     print(f"Processed {frame_count} frames -> output shape: [t, 3, 360, 640]")
 
+if __name__ == "__main__":
+    fn1080 = _to_360p_transform_fn(torch.zeros(3, 1080, 1920))(torch.zeros(3, 1080, 1920))
+    fn480 = _to_360p_transform_fn(torch.zeros(3, 480, 854))(torch.zeros(3, 480, 854))
+    fn360p = _to_360p_transform_fn(torch.zeros(3, 360, 640))(torch.zeros(3, 360, 640))
+
+    print(fn1080.shape)
+    print(fn480.shape)
+    print(fn360p.shape)

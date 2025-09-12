@@ -19,11 +19,11 @@ Datasets = Literal[
     'mkif'
 ]
 STRIDE_SEC: dict[Datasets, float] = {
-    'epic_kitchens_100': 0.5,
-    'comma2k19': 0.5,
-    'egoexplore': 0.5,
-    'kinetics700': 0.5,
-    'mkif': 0.5
+    'epic_kitchens_100': 1.0,
+    'comma2k19': 1.0,
+    'egoexplore': 1.0,
+    'kinetics700': 1.0,
+    'mkif': 1.0
 }
 
 

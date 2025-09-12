@@ -107,21 +107,21 @@ def filter_processed_videos(all_video_paths: Generator[Path, None, None], stride
     
     for path in all_video_paths:
         if dataset_from_path(path) == 'comma2k19':
-            print(f'Comma2k19 does not give video duration so we cannot filter for processed videos. Skipping filtering for Comma2k19')
+            logging.info(f'Comma2k19 does not give video duration so we cannot filter for processed videos. Skipping filtering for Comma2k19')
             yield path
             continue
     
         outdir = output_path(path)
         num_chunks: int | None = utils.peer_chunks(path, stride_sec, chunk_size)
         if not num_chunks:
-            print(f'Peering num chunks failed, including path')
+            logging.info(f'Peering num chunks failed, including path')
             yield path
             continue
 
         num_exist_chunks: int = sum([int((outdir / f"{i:08d}_rgb.pt").exists()) for i in range(num_chunks)])
         # if all the chunks exist, don't write anything unless specified
         if _is_within(num_exist_chunks, num_chunks-1, num_chunks) and not force_overwrite:
-            print(f'Skipping {path} because {num_exist_chunks=} chunks already exist out of {num_chunks=}')
+            logging.info(f'Skipping {path} because {num_exist_chunks=} chunks already exist out of {num_chunks=}')
             continue
         
         yield path
@@ -178,18 +178,16 @@ def all_videos_to_tensors(
 
             for res in results:
                 pbar.update(1)
-                if res["ok"]: print(f"Processed {res['path']} -> {res['saved_count']} chunks")
+                if res["ok"]: logging.info(f"Processed {res['path']} -> {res['saved_count']} chunks")
                 else:
                     msg = f"[FAIL] {res['path']} :: {res['error']}"
-                    print(msg)
+                    logging.info(msg)
                     try:
-                        with FAILED_LOG.open("a") as f: f.write(res["path"] + "\t" + res["error"] + "\n")
-                    except Exception: print(f"[WARN] Could not write to {FAILED_LOG}: {msg}")
+                        logging.info(res["path"] + "\t" + res["error"] + "\n")
+                    except Exception: logging.info(f"[WARN] Could not write to {FAILED_LOG}: {msg}")
 
     ray.shutdown()
-    print(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
-    print(f"Failures (if any) recorded in: {FAILED_LOG.resolve()}")
-
+    logging.info(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
 
 def hours_remaining(video_paths: list[Path]) -> float:
     import ffmpeg
@@ -202,7 +200,7 @@ def hours_remaining(video_paths: list[Path]) -> float:
             unknown_duration_paths.append(path)
             continue
         total_hr += duration
-    print(f'{len(unknown_duration_paths)} videos with unknown duration: {unknown_duration_paths}')
+    logging.info(f'{len(unknown_duration_paths)} videos with unknown duration: {unknown_duration_paths}')
     return total_hr / 3600
 
 

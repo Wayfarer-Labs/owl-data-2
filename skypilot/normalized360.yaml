@@ -14,11 +14,10 @@ setup: |
 
 run: |
   cd /mnt/data/sami/owl-data-2
-  source venv/bin/activate
+  source /mnt/data/sami/owl-data-2/venv/bin/activate
   export PYTHONPATH=.
-  venv/bin/python owl_data/waypoint_1/datasets/all_videos_to_tensors.py \
+  /mnt/data/sami/owl-data-2/venv/bin/python owl_data/waypoint_1/datasets/all_videos_to_tensors.py \
     --num_cpus 64 \
     --node_rank ${SKYPILOT_NODE_RANK} \
     --num_nodes $SKYPILOT_NUM_NODES \
-    --datasets mkif \
-    --video_paths_file remaining_mkif.txt
+    --datasets mkif

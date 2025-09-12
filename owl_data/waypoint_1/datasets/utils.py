@@ -94,6 +94,34 @@ def _to_16_9_crop_fn(frame_chw: torch.Tensor) -> callable:
     
     return transform
 
+def _to_360p_transform_fn(frame_chw: torch.Tensor) -> callable:
+    """
+    Returns a transform that converts a frame (C, H, W) to 360p (640x360).
+    - If the input is already 16:9, just resize to 360p.
+    - Otherwise, center-crop to the largest 16:9 area, then resize to 360p.
+    """
+    original_width = int(frame_chw.shape[2])
+    original_height = int(frame_chw.shape[1])
+
+    # Exact 16:9 check using integer arithmetic
+    if original_width * 9 == original_height * 16:
+        return T.Resize(size=(360, 640), antialias=True)
+
+    target_aspect = 16 / 9
+    if (original_width / original_height) > target_aspect:
+        # Wider than 16:9 → crop width
+        crop_width = int(original_height * target_aspect)
+        crop_height = original_height
+    else:
+        # Taller than 16:9 → crop height
+        crop_width = original_width
+        crop_height = int(original_width / target_aspect)
+
+    return T.Compose([
+        T.CenterCrop(size=(crop_height, crop_width)),
+        T.Resize(size=(360, 640), antialias=True),
+    ])
+
 def process_video_chunks(
     path: Path,
     stride_sec: float = 5.0,
@@ -201,7 +229,7 @@ def process_video_seek_mp4_or_webm(
                     if last_ts_emitted is None or ts > last_ts_emitted + 1e-12:
                         torch_frame = torch.from_numpy(frame.to_rgb().to_ndarray()).permute(2, 0, 1)
                         if transform is None:
-                            transform = _to_16_9_crop_fn(torch_frame)  # your provided function
+                            transform = _to_360p_transform_fn(torch_frame)  # your provided function
                         buf.append(transform(torch_frame))
                         print(f"appended frame at ts: {ts}, t: {t}, eps: {eps}")
                         last_ts_emitted = ts
@@ -233,7 +261,7 @@ def process_video_seek_hevc(
         print(f"Cannot open video file: {path}")
         return
     
-    transform_fn = _to_16_9_crop_fn(torch.zeros(
+    transform_fn = _to_360p_transform_fn(torch.zeros(
         3,
         int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
         int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

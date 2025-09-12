@@ -5,6 +5,7 @@ from pathlib import Path
 import argparse
 from typing import Literal, Generator
 import owl_data.waypoint_1.datasets.utils as utils
+import logging
 import os
 import itertools
 import traceback
@@ -64,8 +65,11 @@ def dataset_from_path(path: Path) -> Datasets:
         case path if 'MKIF'                 in path.parts:  return 'mkif'
         case _:                                             raise TypeError(f"Unsupported path: {path}")
 
+FAILED_LOG   = logging.getLogger('failed_videos')
+FAILED_LOG.setLevel(logging.INFO)
+FAILED_LOG.addHandler(logging.FileHandler(str(Path('/mnt/data/sami/logs') / 'failed_videos.log')))
+FAILED_LOG.addHandler(logging.StreamHandler())
 
-FAILED_LOG = Path("/mnt/data/sami/failed_videos.txt")
 def _is_within(x, lower, upper): return lower <= x <= upper
 
 @ray.remote
@@ -121,6 +125,7 @@ def filter_processed_videos(all_video_paths: Generator[Path, None, None], stride
             continue
         
         yield path
+
 
 def split_by_rank(video_paths: list[Path], num_nodes: int, node_rank: int) -> list[Path]:
     return [path for i, path in enumerate(video_paths) if i % num_nodes == node_rank]
@@ -220,6 +225,7 @@ def main():
         chunk_size=args.chunk_size,
         force_overwrite=args.force_overwrite,
     )
+
 
 def test():
     path = Path('/mnt/data/waypoint_1/datasets/MKIF/videos/JmKzpYtnpb0.mp4')

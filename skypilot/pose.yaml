@@ -1,8 +1,6 @@
 resources:
     cloud: kubernetes
-    cpus: 64+
-    memory: 256+
-    accelerators: H200:8
+    accelerators: H200:4
 
 num_nodes: 8
 

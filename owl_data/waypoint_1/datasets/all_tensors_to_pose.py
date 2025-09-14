@@ -8,17 +8,18 @@ import  os
 import  ray
 import  cv2
 import  tqdm
+import  logging
 import  torch
 import  argparse
 import  traceback
 import  numpy as np
+import  json
 from    pathlib import Path
 from    typing import Optional, Generator, Literal
 
 from ultralytics import YOLO
 
 from owl_data.waypoint_1.datasets.utils import split_by_rank
-
 
 
 Datasets = Literal[
@@ -28,8 +29,9 @@ Datasets = Literal[
     'kinetics700',
     'mkif'
 ]
-FAILED_LOG = Path("/mnt/data/sami/logs/failed_pose.txt")
-HAS_POSE_LOG = Path("/mnt/data/sami/logs/has_pose.txt")
+
+WRITE_LOG = Path("/mnt/data/sami/logs/tensors_to_pose.log")
+
 model = YOLO('yolo11n-pose.pt')
 
 # COCO-17 skeleton edges (adjust if your model uses a different order)
@@ -219,6 +221,15 @@ def all_rgb_to_pose(
     node_rank: int = 0,
     force_overwrite: bool = False
 ) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f'%(asctime)s - %(levelname)s - Node {node_rank}/{num_nodes} - %(message)s',
+        handlers=[
+            logging.FileHandler(WRITE_LOG, mode='a'),
+            logging.StreamHandler()
+        ]
+    )
+
     ray.init(num_cpus=num_cpus)
 
     all_rgb_paths = sorted(rgb_paths())
@@ -243,25 +254,15 @@ def all_rgb_to_pose(
             for res in results:
                 pbar.update(1)
                 if res["ok"]:
-                    print(f"Processed {res['path']} -> {res['saved_count']} chunks")
-                    try:
-                        with HAS_POSE_LOG.open("a") as f: f.write(res["path"] + "\n")
-                    except Exception as e:
-                        msg = f"[WARN] Could not write to {HAS_POSE_LOG}: {e}"
-                        print(msg)
+                    logging.info(f"Processed {res['path']} -> {res['saved_count']} chunks")
+                    logging.info(json.dumps(res))
                 else:
                     msg = f"[FAIL] {res['path']} :: {res['error']}"
-                    print(msg)
-                    try:
-                        with FAILED_LOG.open("a") as f: f.write(res["path"] + "\t" + res["error"] + "\n")
-                    except Exception: print(f"[WARN] Could not write to {FAILED_LOG}: {msg}")
+                    logging.error(msg)
+                    logging.error(json.dumps(res))
     
     ray.shutdown()
-    print(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
-    print(f"Failures (if any) recorded in: {FAILED_LOG.resolve()}")
-    
-    ray.shutdown()
-    print(f'Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos')
+    logging.info(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
 
 
 @ray.remote
@@ -284,7 +285,7 @@ def process(
         err = f"{type(e).__name__}: {e}"
         tb  = "".join(traceback.format_exception_only(type(e), e)).strip()
         tb_full = traceback.format_exc(limit=3)
-        return {"path": str(out_path), "ok": False, "error": f"{err} | {tb} | {tb_full}", "failed_log": FAILED_LOG}
+        return {"path": str(out_path), "ok": False, "error": f"{err} | {tb} | {tb_full}"}
 
 
 def main():

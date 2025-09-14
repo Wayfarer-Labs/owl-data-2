@@ -188,7 +188,7 @@ def build_pose_sidecar_from_frames(
     assert pose_tensor.shape == (N, 1, H, W), f"Got {tuple(pose_tensor.shape)}, expected {(N,1,H,W)}"
 
     if save_path is not None:
-        print(f'Saving pose tensor to {save_path} : RGB {frames_nchw.shape} -> Pose {pose_tensor.shape}')
+        logging.info(f'Saving pose tensor to {save_path} : RGB {frames_nchw.shape} -> Pose {pose_tensor.shape}')
         torch.save(pose_tensor, save_path)
 
     return pose_tensor, has_pose
@@ -299,7 +299,7 @@ def main():
         num_cpus=args.num_cpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,
-        force_overwrite=True,
+        force_overwrite=args.force_overwrite,
     )
 
 

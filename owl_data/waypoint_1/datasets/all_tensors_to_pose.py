@@ -239,7 +239,7 @@ def all_rgb_to_pose(
     node_rank: int = 0,
     tensors_path_file: Optional[str] = None,
     force_overwrite: bool = False,
-    group_size: int = 64, # how many chunks per actor call
+    group_size: int = 16, # how many chunks per actor call
     max_frames_per_call: int = 16 * 4096,   # how many frames to feed the model per YOLO call
 ) -> None:
     logging.basicConfig(

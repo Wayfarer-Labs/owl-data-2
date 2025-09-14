@@ -97,100 +97,6 @@ def _render_pose_frame_binary(
 
     return torch.from_numpy(canvas.astype(bool)).unsqueeze(0)  # [1,H,W], torch.bool
 
-@torch.no_grad()
-def build_pose_sidecar_from_frames(
-    frames_nchw: torch.Tensor,
-    yolo_pose_model,                         # ultralytics.YOLO loaded with a *-pose.pt
-    save_path: Optional[str] = None,
-    batch_size: int = 16,
-    device: Optional[str] = None,
-    kp_thr: float = 0.20,
-    dot_radius: int = 2,
-    line_thickness: int = 2,
-) -> tuple[torch.Tensor, bool]:
-    """
-    Converts RGB chunk [N,3,H,W] -> pose sidecar [N,1,H,W] uint8 via YOLOv11 pose.
-    - yolo_pose_model: e.g., YOLO('yolo11n-pose.pt')
-    - save_path: if provided, torch.save() to this path.
-    Returns the [N,1,H,W] uint8 tensor.
-    """
-    # Convert frames to list of HWC uint8 RGB numpy arrays
-    np_frames = _to_numpy_hwc_bool(frames_nchw)
-    N = len(np_frames)
-    H, W = np_frames[0].shape[:2]
-
-    # Decide device
-    if device is None:
-        # If model already moved to cuda, use that; otherwise CPU
-        try:
-            device = next(yolo_pose_model.model.parameters()).device.type
-        except Exception:
-            device = 'cpu'
-
-    # Inference in mini-batches
-    pose_frames: list[torch.Tensor] = []
-    for start in range(0, N, batch_size):
-        batch = np_frames[start:start + batch_size]
-
-        # Ultralytics accepts list of numpy RGB frames directly
-        # Results is an iterable with one item per input image
-        results = yolo_pose_model(
-            batch,
-            verbose=False,
-            device=device
-        )
-        has_pose = False
-        # Parse each frame's results -> list of persons' keypoints [M,3]
-        # Ultralytics (v8/11) results: result.keypoints.xy [P,M,2], result.keypoints.conf [P,M]
-        for idx, res in enumerate(results):
-            persons_kps: list[np.ndarray] = []
-            if hasattr(res, "keypoints") and (res.keypoints is not None):
-                # Safely extract tensors to CPU numpy
-                try:
-                    xy = res.keypoints.xy  # (P,M,2) tensor
-                    cf = res.keypoints.conf  # (P,M) tensor, may be None
-                    if xy is not None:
-                        xy = xy.detach().cpu().numpy()
-                        if cf is not None:
-                            cf = cf.detach().cpu().numpy()
-                        else:
-                            # fallback: uniform confidence of 1.0
-                            cf = np.ones(xy.shape[:2], dtype=np.float32)
-                        # Pack (x,y,score) per keypoint
-                        P, M = xy.shape[:2]
-                        for p in range(P):
-                            kps = np.concatenate([xy[p], cf[p][..., None]], axis=-1)  # [M,3]
-                            persons_kps.append(kps.astype(np.float32))
-                except Exception:
-                    # If API differs, try accessing .data (older ultralytics)
-                    try:
-                        kd = res.keypoints.data.detach().cpu().numpy()  # [P,M,3]
-                        for p in range(kd.shape[0]):
-                            persons_kps.append(kd[p].astype(np.float32))
-                    except Exception:
-                        persons_kps = []
-
-            has_pose = len(persons_kps) > 0
-
-            pose_img = _render_pose_frame_binary(
-                H, W, persons_kps,
-                edges=COCO_EDGES,
-                kp_thr=kp_thr,
-                dot_radius=dot_radius,
-                line_thickness=line_thickness,
-            )
-            pose_frames.append(pose_img)
-
-    # Stack to [N,1,H,W]
-    pose_tensor = torch.stack(pose_frames, dim=0)
-    assert pose_tensor.shape == (N, 1, H, W), f"Got {tuple(pose_tensor.shape)}, expected {(N,1,H,W)}"
-
-    if save_path is not None:
-        logging.info(f'Saving pose tensor to {save_path} : RGB {frames_nchw.shape} -> Pose {pose_tensor.shape}')
-        torch.save(pose_tensor, save_path)
-
-    return pose_tensor, has_pose
-
 
 def render_pose_preview(pose_bool: torch.Tensor, frame_idx: int = 0, save_path: Optional[str] = None):
     """
@@ -212,84 +118,164 @@ def render_pose_preview(pose_bool: torch.Tensor, frame_idx: int = 0, save_path: 
 def rgb_paths() -> Generator[Path, None, None]:
     yield from Path('/mnt/data/waypoint_1/normalized360').glob('**/**/*_rgb.pt')
 
+# --- a persistent GPU actor that batches frames across many chunks ---
+@ray.remote(num_gpus=1)
+class PoseActor:
+    def __init__(self, weights: str = 'yolo11n-pose.pt', device: str = 'cuda',
+                 kp_thr: float = 0.20, dot_radius: int = 2, line_thickness: int = 2,
+                 max_frames_per_call: int = 2048):
+        from ultralytics import YOLO
+        self.model = YOLO(weights).to(device)
+        self.device = device
+        self.kp_thr = kp_thr
+        self.dot_radius = dot_radius
+        self.line_thickness = line_thickness
+        self.max_frames_per_call = max_frames_per_call  # how many frames to feed per YOLO call
+
+    def _infer_and_render(self, batch_hwc: list[np.ndarray]) -> list[torch.Tensor]:
+        results = self.model(batch_hwc, verbose=False, device=self.device)
+        rendered = []
+        for idx, res in enumerate(results):
+            persons_kps: list[np.ndarray] = []
+            if hasattr(res, "keypoints") and (res.keypoints is not None):
+                try:
+                    xy = res.keypoints.xy
+                    cf = res.keypoints.conf
+                    if xy is not None:
+                        xy = xy.detach().cpu().numpy()
+                        cf = (cf.detach().cpu().numpy()
+                            if cf is not None else np.ones(xy.shape[:2], np.float32))
+                        P, M = xy.shape[:2]
+                        for p in range(P):
+                            kps = np.concatenate([xy[p], cf[p][..., None]], axis=-1)
+                            persons_kps.append(kps.astype(np.float32))
+                except Exception:
+                    try:
+                        kd = res.keypoints.data.detach().cpu().numpy()  # [P,M,3]
+                        for p in range(kd.shape[0]):
+                            persons_kps.append(kd[p].astype(np.float32))
+                    except Exception:
+                        persons_kps = []
+
+            # use H,W of THIS frame (frames can differ!)
+            Hi, Wi = batch_hwc[idx].shape[:2]
+            pose_img = _render_pose_frame_binary(
+                Hi, Wi, persons_kps,
+                edges=COCO_EDGES,
+                kp_thr=self.kp_thr,
+                dot_radius=self.dot_radius,
+                line_thickness=self.line_thickness,
+            )
+            rendered.append(pose_img)  # [1,Hi,Wi]
+        return rendered
+
+
+    def process_group(self, rgb_paths: list[str], force_overwrite: bool = False) -> list[dict]:
+        """Process many *_rgb.pt paths in a single actor, batching across chunks."""
+        results_meta = []
+        # Preload all chunks to CPU and prepare per-chunk builders
+        chunks = []
+        for p in rgb_paths:
+            rgb_path = Path(p)
+            out_path = (rgb_path.parent / rgb_path.stem.replace('_rgb', '_pose')).with_suffix('.pt')
+            if out_path.exists() and not force_overwrite:
+                results_meta.append({"path": str(rgb_path), "ok": True, "skipped": True, "has_pose": None})
+                continue
+            frames = torch.load(rgb_path)  # [N,3,H,W]
+            np_frames = _to_numpy_hwc_bool(frames)  # list of HWC uint8
+            N, H, W = len(np_frames), np_frames[0].shape[0], np_frames[0].shape[1]
+            chunks.append({
+                "rgb_path": rgb_path, "out_path": out_path,
+                "np_frames": np_frames, "N": N, "H": H, "W": W,
+                "poses": [], "has_pose": False
+            })
+
+        # Megabatch frames across chunks
+        staging_frames: list[np.ndarray] = []
+        staging_keys: list[tuple[int,int]] = []  # (chunk_idx, frame_idx)
+
+        def flush():
+            if not staging_frames: return
+            rendered = self._infer_and_render(staging_frames)  # list of [1,H,W] bool
+            # demux back
+            for (ci, fi), pose_img in zip(staging_keys, rendered):
+                chunks[ci]["poses"].append(pose_img)
+                if pose_img.any().item():
+                    chunks[ci]["has_pose"] = True
+            staging_frames.clear()
+            staging_keys.clear()
+
+        # Fill the staging buffer
+        for ci, ch in enumerate(chunks):
+            for fi, f in enumerate(ch["np_frames"]):
+                staging_frames.append(f)
+                staging_keys.append((ci, fi))
+                if len(staging_frames) >= self.max_frames_per_call:
+                    flush()
+        flush()  # remaining
+
+        # Save each chunk
+        for ch in chunks:
+            if len(ch["poses"]) != ch["N"]:
+                results_meta.append({
+                    "path": str(ch["rgb_path"]), "ok": False,
+                    "error": f"pose frames mismatch: got {len(ch['poses'])}, expected {ch['N']}"
+                })
+                continue
+            # poses were appended in order we fed them; ensure correct order per frame index
+            ch["poses"] = ch["poses"]  # already ordered because we staged in increasing fi
+            pose_tensor = torch.stack(ch["poses"], dim=0)  # [N,1,H,W], bool
+            torch.save(pose_tensor, ch["out_path"])
+            results_meta.append({
+                "path": str(ch["rgb_path"]), "ok": True,
+                "saved_to": str(ch["out_path"]),
+                "has_pose": ch["has_pose"], "N": ch["N"], "H": ch["H"], "W": ch["W"]
+            })
+        return results_meta
 
 def all_rgb_to_pose(
-    num_gpus: int = 0,
+    num_gpus: int = 1,
     num_nodes: int = 1,
     node_rank: int = 0,
     tensors_path_file: Optional[str] = None,
-    force_overwrite: bool = False
+    force_overwrite: bool = False,
+    group_size: int = 16,              # how many chunks per actor call
+    max_frames_per_call: int = 4096,   # how many frames to feed the model per YOLO call
 ) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format=f'%(asctime)s - %(levelname)s - Node {node_rank}/{num_nodes} - %(message)s',
-        handlers=[
-            logging.FileHandler(WRITE_LOG, mode='a'),
-            logging.StreamHandler()
-        ]
+        handlers=[logging.FileHandler(WRITE_LOG, mode='a'), logging.StreamHandler()]
     )
-
     ray.init(num_gpus=num_gpus)
-        
+
+    # get paths
     if tensors_path_file is None:
         all_rgb_paths = sorted(rgb_paths())
     else:
         with open(tensors_path_file, 'r') as f:
             all_rgb_paths = [Path(line.strip()) for line in f.readlines()]
-    
-    local_video_paths = split_by_rank(all_rgb_paths, num_nodes, node_rank)
-    
-    futures = [
-        process.remote(
-            path,
-            force_overwrite=force_overwrite
-        )
-        for path in local_video_paths
-    ]
-    
-    with tqdm.tqdm(
-        desc="Processing pose tensors..."
-    ) as pbar:
+    local_paths = split_by_rank(all_rgb_paths, num_nodes, node_rank)
+    local_paths = [str(p) for p in local_paths]
+
+    # one actor per GPU
+    worker = PoseActor.options(num_gpus=1).remote(max_frames_per_call=max_frames_per_call)
+
+    # group paths so each call processes many chunks and megabatches inside
+    groups = [local_paths[i:i+group_size] for i in range(0, len(local_paths), group_size)]
+    futures = [worker.process_group.remote(g, force_overwrite=force_overwrite) for g in groups]
+
+    with tqdm.tqdm(total=len(groups), desc="Processing pose groups") as pbar:
         while futures:
             done, futures = ray.wait(futures)
-            results = ray.get(done)
+            metas = ray.get(done)[0]
+            for m in metas:
+                if m.get("ok"): logging.info(json.dumps(m))
+                else:           logging.error(json.dumps(m))
+            pbar.update(1)
 
-            for res in results:
-                pbar.update(1)
-                if res["ok"]:
-                    logging.info(f"Processed {res['path']}")
-                    logging.info(json.dumps(res))
-                else:
-                    msg = f"[FAIL] {res['path']} :: {res['error']}"
-                    logging.error(msg)
-                    logging.error(json.dumps(res))
-    
     ray.shutdown()
-    logging.info(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
-
-
-@ray.remote(num_gpus=1)
-def process(
-    rgb_path: Path,
-    force_overwrite: bool = False
-):
-    model = YOLO('yolo11n-pose.pt').to('cuda')
-    out_path = (rgb_path.parent / rgb_path.stem.replace('_rgb', '_pose'))\
-        .with_suffix('.pt')
-
-    try:
-        frames_nchw = torch.load(rgb_path)
-        ok = {"path": str("out_path"), "ok": True, "error": None, 'has_pose': False}
-        if out_path.exists() and not force_overwrite: return ok
-        pose, has_pose = build_pose_sidecar_from_frames(frames_nchw, model, save_path=str(out_path), line_thickness=2)
-        ok['has_pose'] = has_pose
-        torch.save(pose, out_path)
-        return ok
-    except Exception as e:
-        err = f"{type(e).__name__}: {e}"
-        tb  = "".join(traceback.format_exception_only(type(e), e)).strip()
-        tb_full = traceback.format_exc(limit=3)
-        return {"path": str(out_path), "ok": False, "error": f"{err} | {tb} | {tb_full}"}
+    logging.info(f"Done - Node {node_rank} of {num_nodes} processed {len(local_paths)} chunks")
 
 
 def main():

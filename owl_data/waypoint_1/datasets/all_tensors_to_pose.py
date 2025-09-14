@@ -217,6 +217,7 @@ def all_rgb_to_pose(
     num_cpus: int = os.cpu_count(),
     num_nodes: int = 1,
     node_rank: int = 0,
+    tensors_path_file: Optional[str] = None,
     force_overwrite: bool = False
 ) -> None:
     logging.basicConfig(
@@ -230,7 +231,11 @@ def all_rgb_to_pose(
 
     ray.init(num_cpus=num_cpus)
 
-    all_rgb_paths = sorted(rgb_paths())
+    if tensors_path_file is None:
+        all_rgb_paths = sorted(rgb_paths())
+    else:
+        with open(tensors_path_file, 'r') as f:
+            all_rgb_paths = [Path(line.strip()) for line in f.readlines()]
     
     local_video_paths = split_by_rank(all_rgb_paths, num_nodes, node_rank)
     
@@ -292,12 +297,14 @@ def main():
     args.add_argument('--num_cpus', type=int, default=os.cpu_count())
     args.add_argument('--num_nodes', type=int, default=1)
     args.add_argument('--node_rank', type=int, default=0)
+    args.add_argument('--tensors_path_file', type=str, default='/mnt/data/sami/owl-data-2/rgb_paths.txt')
     args.add_argument('--force_overwrite', action='store_true')
     args = args.parse_args()
     all_rgb_to_pose(
         num_cpus=args.num_cpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,
+        tensors_path_file=args.tensors_path_file,
         force_overwrite=args.force_overwrite,
     )
 

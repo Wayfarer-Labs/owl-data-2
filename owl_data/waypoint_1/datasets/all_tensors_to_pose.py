@@ -16,7 +16,8 @@ from    pathlib import Path
 from    typing import Optional, Generator, Literal
 
 from ultralytics import YOLO
-import json
+
+from owl_data.waypoint_1.datasets.utils import split_by_rank
 
 
 
@@ -185,6 +186,7 @@ def build_pose_sidecar_from_frames(
     assert pose_tensor.shape == (N, 1, H, W), f"Got {tuple(pose_tensor.shape)}, expected {(N,1,H,W)}"
 
     if save_path is not None:
+        print(f'Saving pose tensor to {save_path} : RGB {frames_nchw.shape} -> Pose {pose_tensor.shape}')
         torch.save(pose_tensor, save_path)
 
     return pose_tensor, has_pose
@@ -221,7 +223,7 @@ def all_rgb_to_pose(
 
     all_rgb_paths = sorted(rgb_paths())
     
-    local_video_paths = all_rgb_paths[node_rank::num_nodes]
+    local_video_paths = split_by_rank(all_rgb_paths, num_nodes, node_rank)
     
     futures = [
         process.remote(

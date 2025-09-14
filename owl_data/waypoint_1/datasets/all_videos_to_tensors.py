@@ -9,6 +9,7 @@ import logging
 import os
 import itertools
 import traceback
+from owl_data.waypoint_1.datasets.utils import split_by_rank
 
 NORMALIZED_360_DIR = Path('/mnt/data/waypoint_1/normalized360')
 Datasets = Literal[
@@ -125,10 +126,6 @@ def filter_processed_videos(all_video_paths: Generator[Path, None, None], stride
             continue
         
         yield path
-
-
-def split_by_rank(video_paths: list[Path], num_nodes: int, node_rank: int) -> list[Path]:
-    return [path for i, path in enumerate(video_paths) if i % num_nodes == node_rank]
 
 
 def all_videos_to_tensors(

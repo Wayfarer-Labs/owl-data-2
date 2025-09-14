@@ -7,9 +7,7 @@ import json
 from typing import Generator
 from pathlib import Path
 from itertools import batched
-
-def split_by_rank(rgb_paths: list[Path], num_nodes: int, node_rank: int) -> list[Path]:
-    return [path for i, path in enumerate(rgb_paths) if i % num_nodes == node_rank]
+from owl_data.waypoint_1.datasets.utils import split_by_rank
 
 WRITE_LOG   = str(Path('/mnt/data/sami/logs') / 'tensors_subsample.log')
 

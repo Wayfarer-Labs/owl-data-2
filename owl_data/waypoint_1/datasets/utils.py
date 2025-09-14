@@ -29,6 +29,8 @@ EPIC_KITCHENS_100_OUT_DIR = Path('/mnt/data/waypoint_1/normalized360/epic_kitche
 KINETICS_700_DIR = Path('/mnt/data/waypoint_1/datasets/kinetics700/Kinetics-700/')
 KINETICS_700_OUT_DIR = Path('/mnt/data/waypoint_1/normalized360/kinetics700/Kinetics-700')
 
+def split_by_rank(paths: list[Path], num_nodes: int, node_rank: int) -> list[Path]:
+    return [path for i, path in enumerate(paths) if i % num_nodes == node_rank]
 
 def _to_16_9_crop_fn(frame_chw: torch.Tensor) -> callable:
     """

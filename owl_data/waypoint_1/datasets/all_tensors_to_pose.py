@@ -32,8 +32,6 @@ Datasets = Literal[
 
 WRITE_LOG = Path("/mnt/data/sami/logs/tensors_to_pose.log")
 
-model = YOLO('yolo11n-pose.pt')
-
 # COCO-17 skeleton edges (adjust if your model uses a different order)
 COCO_EDGES = [
     (5, 7), (7, 9),            # L-Arm
@@ -265,11 +263,12 @@ def all_rgb_to_pose(
     logging.info(f"Done - Node {node_rank} of {num_nodes} finished processing {len(local_video_paths)} videos")
 
 
-@ray.remote
+@ray.remote(num_gpus=1)
 def process(
     rgb_path: Path,
     force_overwrite: bool = False
 ):
+    model = YOLO('yolo11n-pose.pt').to('cuda')
     out_path = (rgb_path.parent / rgb_path.stem.replace('_rgb', '_pose'))\
         .with_suffix('.pt')
 

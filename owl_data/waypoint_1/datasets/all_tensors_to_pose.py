@@ -254,7 +254,7 @@ def all_rgb_to_pose(
             for res in results:
                 pbar.update(1)
                 if res["ok"]:
-                    logging.info(f"Processed {res['path']} -> {res['saved_count']} chunks")
+                    logging.info(f"Processed {res['path']}")
                     logging.info(json.dumps(res))
                 else:
                     msg = f"[FAIL] {res['path']} :: {res['error']}"

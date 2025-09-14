@@ -2,7 +2,7 @@ resources:
     cloud: kubernetes
     accelerators: H200:8
 
-num_nodes: 1
+num_nodes: 4
 
 setup: |
   sudo apt-get update

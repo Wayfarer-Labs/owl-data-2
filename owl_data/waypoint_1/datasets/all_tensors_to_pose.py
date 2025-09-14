@@ -280,9 +280,9 @@ def process(
     try:
         frames_nchw = torch.load(rgb_path)
         ok = {"path": str("out_path"), "ok": True, "error": None, 'has_pose': False}
+        if out_path.exists() and not force_overwrite: return ok
         pose, has_pose = build_pose_sidecar_from_frames(frames_nchw, model, save_path=str(out_path), line_thickness=2)
         ok['has_pose'] = has_pose
-        if out_path.exists() and not force_overwrite: return ok
         torch.save(pose, out_path)
         return ok
     except Exception as e:

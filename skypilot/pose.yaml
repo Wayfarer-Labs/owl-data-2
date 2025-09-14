@@ -2,7 +2,7 @@ resources:
     cloud: kubernetes
     accelerators: H200:8
 
-num_nodes: 2
+num_nodes: 1
 
 setup: |
   sudo apt-get update
@@ -16,7 +16,7 @@ run: |
   source venv/bin/activate
   export PYTHONPATH=.
   venv/bin/python owl_data/waypoint_1/datasets/all_tensors_to_pose.py \
-    --num_cpus 64 \
+    --num_gpus 8 \
     --node_rank ${SKYPILOT_NODE_RANK} \
     --num_nodes $SKYPILOT_NUM_NODES \
     --force_overwrite

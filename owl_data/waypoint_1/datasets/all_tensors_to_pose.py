@@ -215,6 +215,7 @@ def rgb_paths() -> Generator[Path, None, None]:
 
 def all_rgb_to_pose(
     num_cpus: int = os.cpu_count(),
+    num_gpus: int = 0,
     num_nodes: int = 1,
     node_rank: int = 0,
     tensors_path_file: Optional[str] = None,
@@ -229,7 +230,10 @@ def all_rgb_to_pose(
         ]
     )
 
-    ray.init(num_cpus=num_cpus)
+    if num_gpus > 0:
+        ray.init(num_gpus=num_gpus)
+    else:
+        ray.init(num_cpus=num_cpus)
 
     if tensors_path_file is None:
         all_rgb_paths = sorted(rgb_paths())
@@ -295,6 +299,7 @@ def process(
 def main():
     args = argparse.ArgumentParser()
     args.add_argument('--num_cpus', type=int, default=os.cpu_count())
+    args.add_argument('--num_gpus', type=int, default=0)
     args.add_argument('--num_nodes', type=int, default=1)
     args.add_argument('--node_rank', type=int, default=0)
     args.add_argument('--tensors_path_file', type=str, default='/mnt/data/sami/owl-data-2/rgb_paths.txt')
@@ -302,6 +307,7 @@ def main():
     args = args.parse_args()
     all_rgb_to_pose(
         num_cpus=args.num_cpus,
+        num_gpus=args.num_gpus,
         num_nodes=args.num_nodes,
         node_rank=args.node_rank,
         tensors_path_file=args.tensors_path_file,

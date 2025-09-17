@@ -17,7 +17,71 @@ from tqdm import tqdm
 import pdb
 from time import time
 import imageio
+import os, ray, torch
 
+@ray.remote(num_gpus=1)  # exactly one GPU per pipeline actor
+class PipelineWorker:
+    def __init__(self, depth_pose_kwargs: dict):
+        # Ray already sets CUDA_VISIBLE_DEVICES for the actor; this is optional:
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", ",".join(map(str, ray.get_gpu_ids())))
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+        self.depthpose_pipeline = DepthPosePipeline(**depth_pose_kwargs)  # loads all heavy models once
+
+    def process_file(self, frame_path: str, video_dir: str, video_name:str, video_fps: int):
+        """
+        Run exactly one of your existing methods on one .pt file.
+        Use a unique video_name derived from the file to avoid collisions.
+        """
+        try:
+            self.depthpose_pipeline.run_file(frame_path=frame_path, 
+                                            video_dir=video_dir,
+                                            video_name=video_name,
+                                            video_fps=video_fps)
+        except Exception as e:
+            raise Exception(f"Error: could not processes {video_name}, {e}")
+
+        return {"file": frame_file}
+
+def run_pipeline_with_ray(
+    frame_dir: str,
+    video_dir: str,
+    video_name:str,
+    video_fps: int,
+    depth_pose_kwargs: dict | None = None,
+    num_workers: int | None = None        # defaults to #GPUs
+):
+    ray.init(ignore_reinit_error=True)    # or ray.init(address="auto") for a cluster
+
+    n_gpus = torch.cuda.device_count()
+    if num_workers is None:
+        num_workers = n_gpus
+    if num_workers < 1:
+        raise RuntimeError("No GPUs available for Ray workers.")
+
+    workers = [PipelineWorker.remote(depth_pose_kwargs or {}) for _ in range(num_workers)]
+
+    pt_files = sorted(glob.glob(os.path.join(frame_dir, "*.pt")))
+    if not pt_files:
+        raise FileNotFoundError(f"No .pt files in {frame_dir}")
+
+    # Round-robin dispatch: one file per worker, workers reuse loaded models
+    futures = []
+    for i, frame_file in os.listdir(frame_path):
+        worker = workers[i % num_workers]
+        futures.append(worker.process_file.remote(
+            os.path.join(frame_path, frame_file), 
+            video_dir, 
+            video_name, 
+            video_fps
+        ))
+    # Retrieve and collect updates from ray
+    for _ in tqdm(ray.get(futures), total=len(futures)):
+        pass
+
+    ray.shutdown()
+    
 class DepthPosePipeline:
 
     def __init__(self, 
@@ -40,6 +104,7 @@ class DepthPosePipeline:
                 beta:float=0.6,
                 use_compile:bool=False,
                 batch_size:int=50,
+                mode:str='hybrid'
                 ):
         self.video_depth_pipeline = VideoDepthPipeline(
                                     depth_encoder = depth_encoder,
@@ -79,6 +144,8 @@ class DepthPosePipeline:
         self.beta=0.7 if not beta else beta
         self.batch_size = 50 if not batch_size else batch_size
 
+        #define the processing mode (using MoGE only or hybrid depth)
+        self.mode = mode
         #separately save the merged depth video if needed
         self.save_video_depth = save_video_depth
 
@@ -1115,8 +1182,25 @@ class DepthPosePipeline:
         D = torch.nan_to_num(D, nan=0.0, posinf=dmax, neginf=dmin)
         return D.clamp(dmin, dmax)
     
-    def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+    def run_file(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+        if self.mode =='moge':
+            self.run_pipeline_moge(
+                frame_filename=os.path.join(frame_path, frame_file),
+                video_dir= video_dir,
+                video_name = video_name,
+                video_fps = video_fps
+            )
+        elif self.mode == 'hybrid':
+            self.run_pipeline_hybrid(
+                frame_filename=os.path.join(frame_path, frame_file),
+                video_dir= video_dir,
+                video_name = video_name,
+                video_fps = video_fps
+            )
+        else:
+            raise Exception(f'ERROR: mode {self.mode} is invalid')
 
+    def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
         if self.mode == 'moge':
             self.run_video_moge(
                 frame_path = frame_path,
@@ -1124,7 +1208,7 @@ class DepthPosePipeline:
                 video_name = video_name,
                 video_fps = video_fps
             )
-        elif self.mode == 'merged':
+        elif self.mode == 'hybrid':
             self.run_video_hybrid(
                 frame_path = frame_path,
                 video_dir = video_dir,
@@ -1140,7 +1224,8 @@ if __name__ == '__main__':
         segmentation_model='vit_l',
         segmentation_threshold = 0.0,
         save_video_depth = True,
-        keypoint_threshold = 0.0
+        keypoint_threshold = 0.0,
+        mode = 'hybrid'
     )
 
     BASE_PATH = os.path.normpath(os.path.join(os.path.abspath(__file__), '../../temp_files/splits'))
@@ -1154,17 +1239,16 @@ if __name__ == '__main__':
     #     video_name = VIDEO_NAME,
     #     video_fps = VIDEO_FPS
     # )
-
-    # depth_pose_pipeline.run_video(
-    #     frame_path = BASE_PATH,
-    #     video_dir = VIDEO_DIR,
-    #     video_name = VIDEO_NAME,
-    #     video_fps = VIDEO_FPS
-    # )
-
-    depth_pose_pipeline.run_video_hybrid(
+    depth_pose_pipeline.run_video(
         frame_path = BASE_PATH,
         video_dir = VIDEO_DIR,
         video_name = VIDEO_NAME,
         video_fps = VIDEO_FPS
     )
+
+    # depth_pose_pipeline.run_video_hybrid(
+    #     frame_path = BASE_PATH,
+    #     video_dir = VIDEO_DIR,
+    #     video_name = VIDEO_NAME,
+    #     video_fps = VIDEO_FPS
+    # )

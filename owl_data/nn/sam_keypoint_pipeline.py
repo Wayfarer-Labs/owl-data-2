@@ -9,17 +9,18 @@ from tqdm import tqdm
 import colorsys
 import hashlib
 import pdb
+from typing import List, Tuple, Optional
 
 
 class SegmentationPipeline:
     def __init__(self, 
                  model_name: str = 'vit_l',  # Changed default from vit_h to vit_l for better speed
                  score_threshold: float = 0.0,
-                 points_per_side: int = 24, # Fewer points = faster processing
-                 points_per_batch: int = 120,  # More points per batch = better GPU utilization
+                 points_per_side: int = 18, # Fewer points = faster processing
+                 points_per_batch: int = 256,  # More points per batch = better GPU utilization
                  pred_iou_thresh: float = 0.9, # Higher threshold = fewer low-quality masks
                  stability_score_thresh: float = 0.95,
-                 min_mask_region_area: int = 100, #remove small masks for efficiency
+                 min_mask_region_area: int = 150, #remove small masks for efficiency
                  device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         
         sam_model_checkpoints = {
@@ -40,6 +41,7 @@ class SegmentationPipeline:
         # Load model and move to device
         sam_model = sam_model_registry[model_name](checkpoint=model_ckpt)
         sam_model.to(device=device)
+        sam_model.eval()
         
         # Optimized SAM configuration for speed
         self.sam_mask_generator = SamAutomaticMaskGenerator(
@@ -52,9 +54,11 @@ class SegmentationPipeline:
             min_mask_region_area=min_mask_region_area,
             output_mode="binary_mask"  # Most efficient output format
         )
+        torch.backends.cudnn.benchmark = True  # faster speed when input sizes vary; lets cuDNN autotune
         self.score_threshold = score_threshold
         self.device = device
     
+
     def process_video(self, frames: torch.Tensor):
         """
         Process video frames to generate segmentation masks.
@@ -66,37 +70,35 @@ class SegmentationPipeline:
             list: List of masks for each frame, where each mask contains segmentation info
         """
         # Handle single frame case
-        if frames.dim() == 3:  # (C, H, W)
+        if frames.dim == 3:  # (C, H, W)
             frames = frames.unsqueeze(0)  # Add batch dimension
+        #assign frames to cpu device
+        if frames.device.type != 'cpu':
+            frames = frames.cpu()
+        #convert NCHW -> NHWC formatting
+        if frames.shape[1] == 3: 
+            frames = frames.permute(0, 2, 3, 1)
+        if frames.dtype != torch.uint8:
+            frames = (frames.clamp(0,1).mul(255)).to(torch.uint8) if frames.dtype.is_floating_point else frames.to(torch.uint8)
+        frames = frames.contiguous()
+        frames = frames.numpy()
         
         all_masks = []
-        all_segmentation_keypoints = []
-        
-        for i in tqdm(range(frames.shape[0])):
-            frame = frames[i]  # (C, H, W)
-            
-            # Convert from torch tensor to numpy array
-            # Assuming input is in format (C, H, W) with values in [0, 1] or [0, 255]
-            if frame.dtype == torch.float32 or frame.dtype == torch.float64:
-                # Convert from [0, 1] to [0, 255] if needed
-                if frame.max() <= 1.0:
-                    frame = frame * 255
-                frame = frame.byte()
-            
-            # Convert to numpy and change from (C, H, W) to (H, W, C)
-            frame_np = frame.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
-            original_shape = frame_np.shape[:2]  # (H, W)
-            
-            # Generate masks using SAM on the numpy frame
-            masks = self.sam_mask_generator.generate(frame_np)
-            
-            # Extract necessary information from masks
-            processed_masks = self._extract_masks(masks)
-            processed_masks = self._filter_masks_by_score(processed_masks)
-            all_masks.append(self._consolidate_masks(processed_masks['masks']))
-            all_segmentation_keypoints.append(processed_masks['all_keypoints'])
-        
-        return np.stack(all_masks,axis=0), all_segmentation_keypoints
+        all_keypoints = []
+        with torch.inference_mode():
+            for i in tqdm(range(frames.shape[0])):
+                frame = frames[i]  # (C, H, W)
+                masks = self.sam_mask_generator.generate(frame)
+                
+                # Extract necessary information from masks
+                processed_masks = self.extract_masks(masks, 
+                                                    score_th=self.score_threshold
+                                                   )
+                
+                # processed_masks = self._filter_masks_by_score(processed_masks)
+                all_masks.append(self._consolidate_masks(processed_masks['masks']))
+                all_keypoints.append(processed_masks['keypoints_xy'])
+        return torch.from_numpy(np.stack(all_masks,axis=0)), all_keypoints
     
     def _colors_from_ids(self, ids, s=0.65, v=0.95):
         # Deterministic colors from IDs (int or str)
@@ -139,212 +141,190 @@ class SegmentationPipeline:
                 out[m] = colors[i]
         return out
     
-    def find_closest_mask_pixel(self, x_coords, y_coords, target_y, target_x):
-        distances = (y_coords - target_y)**2 + (x_coords - target_x)**2
-        closest_idx = np.argmin(distances)
-        return [x_coords[closest_idx], y_coords[closest_idx]]  # Return as [x, y]
-    
-    def extract_mask_keypoints(self, segmentation):
+    def _stack_masks_from_sam(self,
+                          sam_output: List[dict], *,
+                          score_th: Optional[float] = None,
+                          allow_rle: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Extract keypoints from a segmentation mask.
-        
-        Args:
-            segmentation: Either a binary mask (numpy array) or RLE format dict
-        
         Returns:
-            dict: Dictionary containing keypoint coordinates for different positions
-        """
-        # Convert segmentation to binary mask if needed
-        if isinstance(segmentation, dict):
-            # RLE format - convert to binary mask
-            from segment_anything.utils.amg import rle_to_mask
-            mask = rle_to_mask(segmentation)
-        else:
-            # Already a binary mask
-            mask = segmentation
-        
-        # Ensure mask is boolean
-        if mask.dtype != bool:
-            mask = mask.astype(bool)
-        
-        # Find all mask pixels
-        y_coords, x_coords = np.where(mask)
-        
-        if len(y_coords) == 0:
-            # Empty mask
-            return {
-                'top_left': None, 'top_middle': None, 'top_right': None,
-                'left_middle': None, 'center': None, 'right_middle': None,
-                'bottom_left': None, 'bottom_middle': None, 'bottom_right': None,
-                'intermediate_points': []
-            }
-        
-        # Get bounding box of the mask
-        min_y, max_y = y_coords.min(), y_coords.max()
-        min_x, max_x = x_coords.min(), x_coords.max()
-        
-       
-        # Extract corner and edge keypoints
-        keypoints = {}
-        
-        # Corners
-        keypoints['top_left'] = self.find_closest_mask_pixel(x_coords, y_coords, min_y, min_x)
-        keypoints['top_right'] = self.find_closest_mask_pixel(x_coords, y_coords, min_y, max_x)
-        keypoints['bottom_left'] = self.find_closest_mask_pixel(x_coords, y_coords, max_y, min_x)
-        keypoints['bottom_right'] = self.find_closest_mask_pixel(x_coords, y_coords, max_y, max_x)
-        
-        # Edge midpoints
-        mid_y = (min_y + max_y) // 2
-        mid_x = (min_x + max_x) // 2
-        
-        keypoints['top_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, min_y, mid_x)
-        keypoints['bottom_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, max_y, mid_x)
-        keypoints['left_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, mid_y, min_x)
-        keypoints['right_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, mid_y, max_x)
-        
-        # Center point
-        keypoints['center'] = self.find_closest_mask_pixel(x_coords, y_coords, mid_y, mid_x)
-        
-        
-        # Points between corners and edges
-        quarter_y_top = (min_y + mid_y) // 2
-        quarter_y_bottom = (mid_y + max_y) // 2
-        quarter_x_left = (min_x + mid_x) // 2
-        quarter_x_right = (mid_x + max_x) // 2
-        
-        # Top edge intermediate points
-        keypoints['top_left_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, min_y, quarter_x_left)  # top-left-middle
-        keypoints['top_right_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, min_y, quarter_x_right) # top-right-middle
-        
-        # Bottom edge intermediate points
-        keypoints['bottom_left_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, max_y, quarter_x_left)  # bottom-left-middle
-        keypoints['bottom_right_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, max_y, quarter_x_right)  # bottom-right-middle
-        
-        # Left edge intermediate points
-        keypoints['left_top_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_top, min_x)  # left-top-middle
-        keypoints['left_bottom_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_bottom, min_x)  # left-bottom-middle
-        
-        # Right edge intermediate points
-        keypoints['right_top_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_top, max_x)  # right-top-middle
-        keypoints['right_bottom_middle'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_bottom, max_x)  # right-bottom-middle
-        
-        # Diagonal intermediate points
-        keypoints['top_left_quadrant'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_top, quarter_x_left)  # top-left quadrant
-        keypoints['top_right_quadrant'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_top, quarter_x_right)  # top-right quadrant
-        keypoints['bottom_left_quadrant'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_bottom, quarter_x_left)  # bottom-left quadrant
-        keypoints['bottom_right_quadrant'] = self.find_closest_mask_pixel(x_coords, y_coords, quarter_y_bottom, quarter_x_right)  # bottom-right quadrant
-        
-        return keypoints
-    
-    def _extract_masks(self, sam_output):
-        """
-        Extract and post-process masks from SAM output.
-        
-        Args:
-            sam_output (list): List of dictionaries from SAM generate() method
-        
-        Returns:
-            dict: Dictionary containing processed mask information
+        masks: (N,H,W) bool
+        boxes_xywh: (N,4) int
+        areas: (N,) int
+        scores: (N,) float32
         """
         if not sam_output:
-            return {
-                'masks': np.array(),
-                'point_coords': np.array(),
-                'all_keypoints': np.array(),
-                'boxes': np.array(),
-                'areas': np.array(),
-                'scores': np.array(),
-                'stability_scores': np.array()
-            }
-        
-        masks = []
-        point_coords = []
-        all_keypoints = []
-        boxes = []
-        areas = []
-        scores = []
-        stability_scores = []
-        
-        for mask_data in sam_output:
-            # Extract segmentation mask
-            segmentation = mask_data['segmentation']
-            masks.append(segmentation)
-            
-            # Extract keypoints from the segmentation mask
-            mask_keypoints = self.extract_mask_keypoints(segmentation)
-            
-            # Extract the original point coordinates input to the model
-            reference_keypoints = mask_data['point_coords'] if isinstance(mask_data['point_coords'], list) else mask_data['point_coords'].tolist()
-            
-            # Combine original point coordinates with extracted keypoints
-            all_keypoints.append(reference_keypoints + list(mask_keypoints.values()))
-            
-            # Add intermediate points
-            point_coords.append(reference_keypoints)
-            
-            # Extract bounding box (XYWH format)
-            boxes.append(mask_data['bbox'])
-            
-            # Extract area
-            areas.append(mask_data['area'])
-            
-            # Extract predicted IoU score
-            scores.append(mask_data['predicted_iou'])
-            
-            # Extract stability score
-            stability_scores.append(mask_data['stability_score'])
-        
-        return {
-            'masks': np.array(masks),
-            'point_coords': np.array(point_coords),
-            'all_keypoints': np.array(all_keypoints),
-            'boxes': np.array(boxes),
-            'areas':  np.array(areas),
-            'scores':  np.array(scores),
-            'stability_scores':  np.array(stability_scores),
-            'num_masks': len(masks)
-        }
-    
-    def _filter_masks_by_score(self, processed_masks):
-        """
-        Filter masks by prediction score.
-        
-        Args:
-            processed_masks (dict): Output from _extract_masks
-            min_score (float): Minimum score threshold
-        
-        Returns:
-            dict: Filtered mask data
-        """
-        if len(processed_masks['masks'])==0:
-            return processed_masks
-        
-        filtered_data = {
-            'masks': [],
-            'point_coords': [],
-            'all_keypoints': [],
-            'boxes': [],
-            'areas': [],
-            'scores': [],
-            'stability_scores': []
-        }
-        
-        for i, score in enumerate(processed_masks['scores']):
-            if score >= self.score_threshold:
-                filtered_data['masks'].append(processed_masks['masks'][i])
-                filtered_data['point_coords'].append(processed_masks['point_coords'][i])
-                filtered_data['all_keypoints'].append(processed_masks['all_keypoints'][i])
-                filtered_data['boxes'].append(processed_masks['boxes'][i])
-                filtered_data['areas'].append(processed_masks['areas'][i])
-                filtered_data['scores'].append(processed_masks['scores'][i])
-                filtered_data['stability_scores'].append(processed_masks['stability_scores'][i])
-        
-        filtered_data['num_masks'] = len(filtered_data['masks'])
+            return (np.zeros((0,1,1), bool),
+                    np.zeros((0,4), np.int32),
+                    np.zeros((0,),  np.int32),
+                    np.zeros((0,),  np.float32))
 
-        for (k,v) in filtered_data.items():
-            filtered_data[k] = np.array(v)
-        
-        return filtered_data
+        if allow_rle:
+            try:
+                from segment_anything.utils.amg import rle_to_mask
+            except Exception:
+                rle_to_mask = None
+
+        ms = []
+        sc = []
+        # Filter first (cheap) before stacking
+        for d in sam_output:
+            if score_th is not None and d.get("predicted_iou", 0.0) < score_th:
+                continue
+            seg = d["segmentation"]
+            if isinstance(seg, dict):
+                if not allow_rle:
+                    # Skip or raise if you don't want RLE here
+                    continue
+                if rle_to_mask is None:
+                    raise RuntimeError("RLE mask received but rle_to_mask not available.")
+                seg = rle_to_mask(seg)
+            ms.append(seg.astype(bool, copy=False))
+            sc.append(float(d.get("predicted_iou", 0.0)))
+
+        if not ms:
+            return (np.zeros((0,1,1), bool),
+                    np.zeros((0,4), np.int32),
+                    np.zeros((0,),  np.int32),
+                    np.zeros((0,),  np.float32))
+
+        masks = np.stack(ms, axis=0)               # (N,H,W) bool
+        scores = np.asarray(sc, dtype=np.float32)  # (N,)
+
+        N, H, W = masks.shape
+
+        # Areas (vectorized)
+        areas = masks.sum(axis=(1,2), dtype=np.int32)
+
+        # Bounding boxes (vectorized via projections)
+        rows_any = masks.any(axis=2)           # (N,H) True where any pixel in row
+        cols_any = masks.any(axis=1)           # (N,W)
+
+        # Handle empty masks gracefully (return -1s)
+        has_row = rows_any.any(axis=1)
+        has_col = cols_any.any(axis=1)
+
+        y_min = np.where(has_row, rows_any.argmax(axis=1), -1)
+        y_max = np.where(
+            has_row,
+            H - 1 - rows_any[:, ::-1].argmax(axis=1),
+            -1
+        )
+        x_min = np.where(has_col, cols_any.argmax(axis=1), -1)
+        x_max = np.where(
+            has_col,
+            W - 1 - cols_any[:, ::-1].argmax(axis=1),
+            -1
+        )
+
+        w = np.maximum(0, x_max - x_min + 1).astype(np.int32)
+        h = np.maximum(0, y_max - y_min + 1).astype(np.int32)
+        boxes_xywh = np.stack([x_min, y_min, w, h], axis=1).astype(np.int32)
+
+        return masks, boxes_xywh, areas, scores
+
+    def extract_mask_keypoints(self, masks: np.ndarray):
+        """
+        Batched keypoint extraction directly from masks (no boxes, no SciPy).
+        masks: (B,H,W) bool/0-1
+        Returns:
+        pts_xy: (B,K,2) int32, keypoints snapped to nearest True pixel
+        names:  list of K names
+        """
+        assert masks.ndim == 3
+        B, H, W = masks.shape
+        masks = masks.astype(bool, copy=False)
+
+        names = [
+            "top_left","top_middle","top_right",
+            "left_middle","center","right_middle",
+            "bottom_left","bottom_middle","bottom_right",
+            "top_left_middle","top_right_middle",
+            "bottom_left_middle","bottom_right_middle",
+            "left_top_middle","left_bottom_middle",
+            "right_top_middle","right_bottom_middle",
+            "top_left_quadrant","top_right_quadrant",
+            "bottom_left_quadrant","bottom_right_quadrant",
+        ]
+        K = len(names)
+        pts_xy = np.full((B, K, 2), -1, dtype=np.int32)
+
+        # Precompute a coordinate grid for quick indexing
+        ys_grid, xs_grid = np.mgrid[0:H, 0:W]
+
+        for i in range(B):
+            m = masks[i]
+            if not m.any():
+                continue
+
+            y_coords = ys_grid[m]
+            x_coords = xs_grid[m]
+
+            min_y, max_y = y_coords.min(), y_coords.max()
+            min_x, max_x = x_coords.min(), x_coords.max()
+            ym  = (min_y + max_y) // 2
+            xm  = (min_x + max_x) // 2
+            qy_t = (min_y + ym) // 2
+            qy_b = (ym + max_y) // 2
+            qx_l = (min_x + xm) // 2
+            qx_r = (xm + max_x) // 2
+
+            # targets as (K,2) in (y,x) order
+            targets = np.array([
+                [min_y, min_x], [min_y, xm],   [min_y, max_x],
+                [ym,    min_x], [ym,    xm],   [ym,    max_x],
+                [max_y, min_x], [max_y, xm],   [max_y, max_x],
+                [min_y, qx_l],  [min_y, qx_r],
+                [max_y, qx_l],  [max_y, qx_r],
+                [qy_t,  min_x], [qy_b,  min_x],
+                [qy_t,  max_x], [qy_b,  max_x],
+                [qy_t,  qx_l],  [qy_t,  qx_r],
+                [qy_b,  qx_l],  [qy_b,  qx_r],
+            ], dtype=np.int32)
+
+            # Vectorized nearest search for all K targets
+            # dist: (K, P_i)
+            dy = y_coords[None, :] - targets[:, 0, None]
+            dx = x_coords[None, :] - targets[:, 1, None]
+            dist = dy*dy + dx*dx
+            nn_idx = dist.argmin(axis=1)  # (K,)
+
+            pts_xy[i, :, 0] = x_coords[nn_idx]
+            pts_xy[i, :, 1] = y_coords[nn_idx]
+
+        return pts_xy, names
+
+
+    def extract_masks(
+        self,
+        sam_output: List[dict],
+        score_th: Optional[float] = None,
+        allow_rle: bool = False
+    ) -> dict[str, object]:
+        """
+        Vectorized mask extraction from SAM output. ~10–100x less Python overhead than per-mask loops.
+        """
+        masks, boxes_xywh, areas, scores = self._stack_masks_from_sam(
+            sam_output, score_th=score_th, allow_rle=allow_rle
+        )
+        N = masks.shape[0]
+        out = {
+            "masks": masks,                            # (N,H,W) bool
+            "boxes": boxes_xywh,                       # (N,4)  int XYWH
+            "areas": areas,                            # (N,)   int
+            "scores": scores,                          # (N,)   float32
+            "num_masks": int(N),
+            # Keep SAM’s original points as a list (variable-length)
+            "point_coords": [d.get("point_coords", []) for d in sam_output][:N],
+            # Stability score if present; otherwise zeros
+            "stability_scores": np.asarray(
+                [d.get("stability_score", 0.0) for d in sam_output][:N], dtype=np.float32
+            ),
+        }
+        pts_xy, kp_names = self.extract_mask_keypoints(masks)  # (N,K,2)
+        out["keypoints_xy"] = pts_xy           # (N,K,2) int
+        out["keypoint_names"] = kp_names       # list[str]
+
+        return out
     
     def __call__(self, frames: torch.Tensor):
         """

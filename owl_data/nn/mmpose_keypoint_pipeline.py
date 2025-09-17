@@ -1,6 +1,9 @@
 import cv2
 import os
 import torch
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
 import numpy as np
 from torch.nn import functional as F
 import sys
@@ -17,46 +20,50 @@ torch.backends.cuda.enable_flash_sdp(True)
 from mmpose.apis import MMPoseInferencer
 
 class PoseKeypointPipeline:
-    def __init__(self, keypoint_threshold: float = 0.3):
+    def __init__(self, keypoint_threshold:float = 0.3, batch_size:int=8):
         """
         Initialize the pose keypoint pipeline with human and animal pose models.
         
         Args:
             keypoint_threshold: Minimum confidence threshold for keypoints
         """
+        self.device = torch.device("cuda")
         self.human_pose_model = MMPoseInferencer(
-            pose2d='rtmpose-m_8xb256-420e_coco-256x192'
+            pose2d='rtmpose-m_8xb256-420e_coco-256x192',
+            device=self.device
         )
         # Use the animal alias which corresponds to rtmpose-m_8xb64-210e_ap10k-256x256
         self.animal_pose_model = MMPoseInferencer(
-            pose2d='animal'
+            pose2d='animal',
+            device=self.device
         )
         self.keypoint_threshold = keypoint_threshold
+        self.batch_size = int(batch_size)
     
-    def _frame_generator(self, frames: torch.Tensor):
+    def _preprocess_frames(self, frames: torch.Tensor):
         """
         Generator that yields frames from the input tensor.
         
         Args:
             frames: Input video tensor of shape [N, C, H, W] or [N, H, W, C]
         """
-        n_frames = frames.shape[0]
-        
-        for i in range(n_frames):
-            # Handle different input formats
-            if frames.dim() == 4:
-                if frames.shape[1] == 3:  # [N, C, H, W]
-                    frame = frames[i].permute(1, 2, 0).numpy()
-                else:  # [N, H, W, C]
-                    frame = frames[i].numpy()
-            else:
-                raise ValueError(f"Unsupported frame tensor shape: {frames.shape}")
-                
-            # Ensure frame is in uint8 format
-            if frame.dtype != np.uint8:
-                frame = (frame * 255).astype(np.uint8) if frame.max() <= 1.0 else frame.astype(np.uint8)
-                
-            yield frame
+        assert frames.device.type == 'cpu', "Keep pose inputs on CPU to avoid GPU->CPU sync"
+        assert frames.ndim == 4, "Expected batched 4D tensor for keypoint detection"
+
+        if frames.dtype != torch.uint8:
+            frames = (frames.clamp(0,1).mul(255)).to(torch.uint8) if frames.dtype.is_floating_point else frames.to(torch.uint8)
+        #convert NCHW image to NHWC image
+        if frames.shape[1] == 3:
+            frames = frames.permute(0,2,3,1).contiguous()
+        elif frames.shape[-1]==3:
+            frames = frames.contiguous()
+        else:
+            raise Exception(f"Channel dimension is not 3: {frame.shape}")
+
+        #convert to numpy on CPU
+        frames = frames.numpy() 
+        frames = [frames[i] for i in range(frames.shape[0])]
+        return frames
     
     def _extract_keypoints_from_predictions(self, predictions: Dict, height:int, width:int) -> List[np.ndarray]:
         """
@@ -83,7 +90,7 @@ class PoseKeypointPipeline:
                     
         return all_keypoints
     
-    def process_video(self, frames: torch.Tensor) -> tuple[torch.nested.nested_tensor, torch.Tensor]:
+    def process_video(self, frames: torch.Tensor) -> tuple[List, torch.Tensor]:
         """
         Process video frames and extract keypoints from both human and animal models.
         
@@ -97,43 +104,43 @@ class PoseKeypointPipeline:
                 - flattened_points: Tensor of shape [total_points, 2] with all keypoints
                   flattened from all objects and frames
         """
-        if frames.numel() == 0:
-            return torch.nested.nested_tensor([]), torch.empty(0, 2)
-            
-        for frame_idx, frame in tqdm(enumerate(self._frame_generator(frames))):
-            try:
-                # Process with human pose model
-                human_predictions = next(self.human_pose_model(frame, show=False))
-                human_keypoints = self._extract_keypoints_from_predictions(
-                                    human_predictions,
-                                    height = frame.shape[0],
-                                    width = frame.shape[1]
-                )
-                
-                # Process with animal pose model  
-                animal_predictions = next(self.animal_pose_model(frame, show=False))
-                animal_keypoints = self._extract_keypoints_from_predictions(
-                                    animal_predictions,
-                                    height = frame.shape[0],
-                                    width = frame.shape[1]
-                )
-                
-                # Combine keypoints from both models
-                frame_keypoints = human_keypoints + animal_keypoints
-                
-                # Create nested tensor to handle ragged dimensions
-                if frame_keypoints:
-                    nested_tensor = torch.nested.nested_tensor(frame_keypoints)
-                    flattened_points = torch.cat([t for t in nested_tensor.unbind()], dim=0)
-                    yield nested_tensor, flattened_points
-                else:
-                    yield torch.nested.nested_tensor([]), torch.empty(0, 2)
-                     
-            except Exception as e:
-                print(f"Warning: Failed to process frame {frame_idx}: {e}")
-                continue
-        
+        frames = self._preprocess_frames(frames)
+        if len(frames) == 0:
+            return [], torch.empty(0, 2)
 
+        H,W = frames[0].shape[0:2]
+        try:
+            # Process with human pose model
+            human_predictions = self.human_pose_model(frames, show=False, batch_size=self.batch_size)
+            # Process with animal pose model  
+            animal_predictions = self.animal_pose_model(frames, show=False, batch_size=self.batch_size)
+
+            #aggregate points from both human and animal predictions
+            flattened_points = []
+            per_frame_keypoints = []
+            for (human_pred, animal_pred) in tqdm(zip(human_predictions, animal_predictions), total=len(frames)):
+
+                human_keypoints = self._extract_keypoints_from_predictions(
+                                    human_pred,
+                                    height = H,
+                                    width = W
+                )
+                animal_keypoints = self._extract_keypoints_from_predictions(
+                                    animal_pred,
+                                    height = H,
+                                    width = W
+                )
+                combined_kp = human_keypoints + animal_keypoints
+                per_frame_keypoints.append(combined_kp)
+                flattened_points.append(np.concatenate(combined_kp, axis=0))
+            
+            #merge keypoints for all frames into 1 tensor output
+            flattened_points = np.concatenate(flattened_points, axis=0) if flattened_points else np.empty((0,2), dtype=np.float32)
+            return per_frame_keypoints, torch.from_numpy(flattened_points)
+
+        except Exception as e:
+            raise Exception(f"Warning: Failed to process frames: {e}")
+            
     def __call__(self, frames: torch.Tensor) -> tuple[torch.nested.nested_tensor, torch.Tensor]:
         """
         Callable interface for the pipeline.
@@ -147,11 +154,5 @@ class PoseKeypointPipeline:
                 - flattened_points: Tensor of shape [total_points, 2] with all keypoints
                   flattened from all objects and frames
         """
-        nested_frame_data = []
-        flattened_frame_data = []
-        
-        for i, (frame_nested, frame_flattened) in enumerate(self.process_video(frames=frames)):
-            nested_frame_data.append(frame_nested.cpu())
-            flattened_frame_data.append(frame_flattened.cpu())
-        
-        return nested_frame_data, torch.nested.nested_tensor(flattened_frame_data)
+        per_frame_keypoints, flat_keypoints = self.process_video(frames=frames)
+        return per_frame_keypoints, flat_keypoints

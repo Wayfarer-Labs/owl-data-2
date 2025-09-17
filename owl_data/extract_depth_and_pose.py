@@ -5,30 +5,29 @@ from typing import Optional, Tuple
 from owl_data.nn.video_depth_pipeline import VideoDepthPipeline
 from owl_data.nn.moge_points_intrinsics_pipeline import MoGePointsIntrinsicsPipeline
 from owl_data.nn.mmpose_keypoint_pipeline import PoseKeypointPipeline
-from owl_data.nn.multi_gpu_sam_pipeline import MultiGPUSegmentationWrapper
 from owl_data.nn.sam_keypoint_pipeline import SegmentationPipeline
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torchvision.models.optical_flow import raft_large, Raft_Large_Weights
 import cv2
+import matplotlib
 import numpy as np 
 from tqdm import tqdm
 import pdb
-import matplotlib.pyplot as plt
-
-
+from time import time
+import imageio
 
 class DepthPosePipeline:
 
     def __init__(self, 
                 depth_encoder:str='vitl', 
-                segmentation_model:str = 'vit_h', 
+                segmentation_model:str = 'vit_l', 
                 save_video_depth:bool=False, 
                 keypoint_threshold:float=0.3, 
                 segmentation_threshold:float=0.5,
                 flow_static_threshold:float=0.7,
-                photo_static_threshold:float=0.07,
+                photo_static_threshold:float=0.06,
                 grad_min_threshold:float=0.04,
                 huber_delta:float=0.05,
                 iters:int=6,
@@ -38,7 +37,9 @@ class DepthPosePipeline:
                 var_window:int=1,
                 tau:float=0.03,
                 edge_threshold:float=0.1,
-                beta:float=0.6
+                beta:float=0.6,
+                use_compile:bool=False,
+                batch_size:int=50,
                 ):
         self.video_depth_pipeline = VideoDepthPipeline(
                                     depth_encoder = depth_encoder,
@@ -54,6 +55,7 @@ class DepthPosePipeline:
                                 )
         
         self.moge_pipeline = MoGePointsIntrinsicsPipeline(save_video_depth=save_video_depth)
+        self.save_video_depth = save_video_depth
 
         self.raft_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.raft_model = raft_large(weights=Raft_Large_Weights.DEFAULT).to(self.raft_device).eval()
@@ -75,9 +77,21 @@ class DepthPosePipeline:
         self.tau=0.03 if not tau else tau
         self.edge_threshold=0.07 if not edge_threshold else edge_threshold
         self.beta=0.7 if not beta else beta
+        self.batch_size = 50 if not batch_size else batch_size
 
         #separately save the merged depth video if needed
         self.save_video_depth = save_video_depth
+
+        # after all attributes are set (models, epsilon, etc.)
+        if use_compile:
+            try:
+                # Stable shapes/dtypes? Try more aggressive mode.
+                compile_mode = "max-autotune"   # or "reduce-overhead" if shapes vary a lot
+                self._guided_filter_gray = torch.compile(self._guided_filter_gray, mode=compile_mode)
+                self._box_filter_2d      = torch.compile(self._box_filter_2d,      mode=compile_mode)
+                self.smooth_residual_three_tap_vec = torch.compile(self.smooth_residual_three_tap_vec, mode=compile_mode)
+            except Exception as e:
+                print(f"[compile] fell back to eager: {e}")
 
 
     def normalize_coord_map(self, coords_tensor: torch.Tensor):
@@ -184,6 +198,9 @@ class DepthPosePipeline:
         # Extract coordinates and depth values for valid keypoints
         num_keypoints = len(valid_keypoints)
         coord_depth_tensor = torch.zeros((height, width, 4), dtype=torch.float32)
+
+        if not keypoints: 
+            return coord_depth_tensor
         
         for i, (x, y) in enumerate(valid_keypoints):
             # Extract 3D coordinates (X, Y, Z) from coord_map
@@ -252,8 +269,8 @@ class DepthPosePipeline:
         
         
         # Convert to integer pixel coordinates
-        pixel_x = keypoints[:, 0].long()
-        pixel_y = keypoints[:, 1].long()
+        pixel_x = keypoints[:, 0].long().clamp_(0, width-1)
+        pixel_y = keypoints[:, 1].long().clamp_(0, height-1)
         
         # Extract depth values at keypoint locations
         depth = depth_map[pixel_y, pixel_x]
@@ -354,25 +371,8 @@ class DepthPosePipeline:
         return full_coord_map
 
     def run_pipeline_moge(self, frame_filename:str, video_dir: str, video_name:str, video_fps:int):
-        frames = torch.load(frame_filename)[:20]
+        frames = torch.load(frame_filename)
         frame_idx = frame_filename.split('/')[-1].split('_')[0]
-
-        #Step 1: extract the RTM pose pixels for humans and animals in the frames
-        separate_entity_keypoints, aggregated_keypoints = self.pose_keypoint_pipeline(frames=frames)
-        torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
-        
-        #Step 2: extract the visual segmentations using SAM + compute keypoints for segment blobs
-        masks, segmentation_keypoints = self.segmentation_pipeline(frames=frames)
-        torch.cuda.empty_cache()  # Clear GPU memory after segmentation
-        
-        #Step 3: run MoGe to get depth maps and coordinates directly from the images
-        moge_output = self.moge_pipeline(
-                                        frames=frames,
-                                        video_dir=video_dir,
-                                        video_name=video_name,
-                                        video_fps=video_fps
-                                        )
-        torch.cuda.empty_cache()  # Clear GPU memory after MoGe processing
         
         full_depth_path = os.path.join(video_dir, 'full_depth_splits')
         full_seg_path = os.path.join(video_dir, 'full_seg_splits')
@@ -385,136 +385,84 @@ class DepthPosePipeline:
         os.makedirs(keypoint_depth_path, exist_ok=True)
         os.makedirs(keypoint_coord_path, exist_ok=True)
 
-        #Step 4: save the depth map for each frame in frames as 1D pt file
-        torch.save(torch.stack(moge_output['depth']).unsqueeze(-1), os.path.join(full_depth_path, f'{frame_idx}_fulldepth.pt'))
-        #Step 7: save consistently colored segmentation for each frame in frames as RGB pt file
-        torch.save(torch.Tensor(masks), os.path.join(full_seg_path, f'{frame_idx}_segmap.pt'))
-        
+        #accumulate results over ALL batches on cpu
         all_keypoint_depths = []
         all_coord_depth_maps = []
-        for i, (depth_map, coord_map, seg_keypoint, agg_keypoint) in enumerate(zip(
-                                                                            moge_output['depth'], 
-                                                                            moge_output['points'], 
-                                                                            segmentation_keypoints, 
-                                                                            aggregated_keypoints
-                                                                            )):
-            #Step 2.5: merge keypoints from segmentations and human/animals
-            all_keypoints = self._aggregate_keypoints(seg_keypoint, agg_keypoint)
+        all_merged_depths = []
+        all_segmentation_maps = []
+
+        for k in range(0, frames.shape[0], self.batch_size):
+            frame_batch = frames[k:k+self.batch_size]
+            #Step 1: extract the RTM pose pixels for humans and animals in the frames
+            separate_entity_keypoints, aggregated_keypoints = self.pose_keypoint_pipeline(frames=frame_batch)
+            torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
             
-            #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
-            #Step 6: save the 3D coordinate for KEYPOINTS in each frame as RGB pt file
-            keypoint_coord_map = self._create_coord_depth_map_moge(all_keypoints, coord_map, depth_map)
-            keypoint_depths = keypoint_coord_map[:, :, 3] if keypoint_coord_map.shape[0] > 0 else torch.tensor([])
-            all_keypoint_depths.append(keypoint_depths.cpu())
-            all_coord_depth_maps.append(keypoint_coord_map[:, :, :3].cpu())
-
-        # Save keypoint depth values (4th channel of coord_depth_map)
-        torch.save(torch.stack(all_keypoint_depths), os.path.join(keypoint_depth_path, f'{frame_idx}_kpdepth.pt'))
-        # Save the full 4-channel coord_depth_map
-        torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
-
-    def run_pipeline(self, frame_filename:str, video_dir: str, video_name:str, video_fps: int):
-        frames = torch.load(frame_filename)[:20]
-        frame_idx = frame_filename.split('/')[-1].split('_')[0]
-
-        #Step 0: extract the video FOV using the first frame with MoGe
-        self.moge_pipeline.save_video = False
-        estimated_intrinsics = self.moge_pipeline(
-                                        frames=frames[0].unsqueeze(0),
-                                        video_dir=video_dir,
-                                        video_name=video_name,
-                                        video_fps=video_fps
-                                        )['intrinsics'][0].cpu()
-        
-        #Step 1: extract the RTM pose pixels for humans and animals in the frames
-        separate_entity_keypoints, pose_keypoints = self.pose_keypoint_pipeline(frames=frames)
-        torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
-        
-        #Step 2: extract the visual segmentations using SAM + compute keypoints for segment blobs
-        masks, segmentation_keypoints = self.segmentation_pipeline(frames=frames)
-        torch.cuda.empty_cache()  # Clear GPU memory after segmentation
-        
-        #Step 3: run VideoDepthAnything to get consistent depth maps
-        depth_tensors, ___ = self.video_depth_pipeline(
-                                frames=frames,
-                                video_dir=video_dir,
-                                video_name=video_name,
-                                target_width = frames[0].shape[2],
-                                target_height = frames[0].shape[1],
-                                video_fps = video_fps
-                            )
-
-        full_depth_path = os.path.join(video_dir, 'full_depth_splits')
-        full_seg_path = os.path.join(video_dir, 'full_seg_splits')
-        keypoint_depth_path = os.path.join(video_dir, 'keypoint_depth_splits')
-        keypoint_coord_path = os.path.join(video_dir, 'keypoint_coord_splits')
-
-        # Create directories if they don't exist
-        os.makedirs(full_depth_path, exist_ok=True)
-        os.makedirs(full_seg_path, exist_ok=True)
-        os.makedirs(keypoint_depth_path, exist_ok=True)
-        os.makedirs(keypoint_coord_path, exist_ok=True)
-
-
-        #Step 4: save the depth map for each frame in frames as 1D pt file
-        torch.save(depth_tensors, os.path.join(video_dir, os.path.join(full_depth_path, f'{frame_idx}_fulldepth.pt')))
-        #Step 7: save consistently colored segmentation for each frame in frames as RGB pt file
-        torch.save(torch.Tensor(masks), os.path.join(full_seg_path, f'{frame_idx}_segmap.pt'))
-
-        all_keypoint_depths = []
-        all_coord_depth_maps = []
-        #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
-        #Step 6: COMPUTE and save the 3D coordinate for KEYPOINTS in each frame as RGB pt file => using FOV + (cx,cy) formula
-        for i, (depth_map, seg_keypoint, pos_keypoint) in enumerate(zip(depth_tensors,
-                                                                        segmentation_keypoints, 
-                                                                        pose_keypoints
-                                                                    )):
-            #Step 2.5: merge keypoints from segmentations and human/animals
-            all_keypoints = self._aggregate_keypoints(seg_keypoint, pos_keypoint)
+            #Step 2: extract the visual segmentations using SAM + compute keypoints for segment blobs
+            masks, segmentation_keypoints = self.segmentation_pipeline(frames=frame_batch)
+            torch.cuda.empty_cache()  # Clear GPU memory after segmentation
             
-            #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
-            #Step 6: save the 3D coordinate for KEYPOINTS in each frame as RGB pt file
-            keypoint_coord_map = self._create_coord_depth_map(all_keypoints, depth_map, estimated_intrinsics)
+            #Step 3: run MoGe to get depth maps and coordinates directly from the images
+            moge_output = self.moge_pipeline(
+                                            frames=frame_batch,
+                                            video_dir=video_dir,
+                                            video_name=video_name,
+                                            video_fps=video_fps
+                                            )
+            torch.cuda.empty_cache()  # Clear GPU memory after MoGe processing
             
-            full_coord_map = self._create_full_coord_depth_map(depth_map, estimated_intrinsics)
-            keypoint_depths = keypoint_coord_map[:,:,3] if keypoint_coord_map.shape[1] > 0 else torch.tensor([])
+            #accumulate the merged depth map and masks on cpu
+            all_segmentation_maps.append(masks)
+
+            for i, (depth_map, coord_map, seg_keypoint, agg_keypoint) in enumerate(zip(
+                                                                                moge_output['depth'], 
+                                                                                moge_output['points'], 
+                                                                                segmentation_keypoints, 
+                                                                                aggregated_keypoints
+                                                                                )):
+                #Step 2.5: merge keypoints from segmentations and human/animals
+                all_keypoints = self._aggregate_keypoints(seg_keypoint, agg_keypoint)
+                
+                #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
+                #Step 6: save the 3D coordinate for KEYPOINTS in each frame as RGB pt file
+                keypoint_coord_map = self._create_coord_depth_map_moge(all_keypoints, coord_map, depth_map)
+                keypoint_depths = keypoint_coord_map[:, :, 3] if keypoint_coord_map.shape[0] > 0 else torch.tensor([])
+
+                # Move to CPU to save GPU memory
+                all_keypoint_depths.append(keypoint_depths.cpu())
+                all_coord_depth_maps.append(keypoint_coord_map[:, :, :3].cpu())
+                all_merged_depths.append(depth_map.cpu())
+
+                # Clear GPU memory after each iteration
+                torch.cuda.empty_cache()
+
+            #after all frame batches processed: stack keypoint depths, depth maps, coord maps, segmentation maps 
+            #save merged depth map for each frame in frames as 1D pt file
+            torch.save(torch.cat(all_merged_depths, dim=0), os.path.join(video_dir, os.path.join(full_depth_path, f'{frame_idx}_fulldepth.pt')))
+            #save colored segmentation for each frame in frames as RGB pt file
+            torch.save(torch.cat(all_segmentation_maps, dim=0), os.path.join(full_seg_path, f'{frame_idx}_segmap.pt'))
+            #save keypoint depth values (4th channel of coord_depth_map)
+            torch.save(torch.stack(all_keypoint_depths), os.path.join(keypoint_depth_path, f'{frame_idx}_kpdepth.pt'))
+            #save the full 4-channel coord_depth_map
+            torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
             
-            # Move to CPU to save GPU memory
-            all_keypoint_depths.append(keypoint_depths.cpu())
-            all_coord_depth_maps.append(keypoint_coord_map[:,:,:3].cpu())
-            
-            # Clear GPU memory after each iteration
-            torch.cuda.empty_cache()
-        
-        # Save keypoint depth values (4th channel of coord_depth_map)
-        torch.save(torch.stack(all_keypoint_depths), os.path.join(keypoint_depth_path, f'{frame_idx}_kpdepth.pt'))
-        # Save the full 4-channel coord_depth_map
-        torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
     def run_pipeline_hybrid(self, frame_filename:str, video_dir:str, video_name:str, video_fps:int):
-        frames = torch.load(frame_filename)[:50]
+        frames = torch.load(frame_filename)
         frame_idx = frame_filename.split('/')[-1].split('_')[0]
 
-        #Step 0: extract the video FOV using the first frame with MoGe
-        self.moge_pipeline.save_video = False
-        moge_output = self.moge_pipeline(
-                                        frames=frames,
-                                        video_dir=video_dir,
-                                        video_name=video_name,
-                                        video_fps=video_fps
-                                        )
-        torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
-        estimated_intrinsics = moge_output['intrinsics'][0]
-        
-        #Step 1: extract the RTM pose pixels for humans and animals in the frames
-        separate_entity_keypoints, pose_keypoints = self.pose_keypoint_pipeline(frames=frames)
-        torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
-        
-        #Step 2: extract the visual segmentations using SAM + compute keypoints for segment blobs
-        masks, segmentation_keypoints = self.segmentation_pipeline(frames=frames)
-        torch.cuda.empty_cache()  # Clear GPU memory after segmentation
-        
+        full_depth_path = os.path.join(video_dir, 'full_depth_splits')
+        full_seg_path = os.path.join(video_dir, 'full_seg_splits')
+        keypoint_depth_path = os.path.join(video_dir, 'keypoint_depth_splits')
+        keypoint_coord_path = os.path.join(video_dir, 'keypoint_coord_splits')
+
+        # Create directories if they don't exist
+        os.makedirs(full_depth_path, exist_ok=True)
+        os.makedirs(full_seg_path, exist_ok=True)
+        os.makedirs(keypoint_depth_path, exist_ok=True)
+        os.makedirs(keypoint_coord_path, exist_ok=True)
+
         #Step 3: run VideoDepthAnything to get consistent depth maps
+        self.video_depth_pipeline.save_video = False
         depth_tensors, ___ = self.video_depth_pipeline(
                                 frames=frames,
                                 video_dir=video_dir,
@@ -525,77 +473,118 @@ class DepthPosePipeline:
                             )
         torch.cuda.empty_cache()  # Clear GPU memory after VDA inference
 
-        #Step 3.5: merge depth map from VDA and MoGE
-        flows_fwd, flows_bwd = self.build_optical_flow_raft(frames)
-        merged_depth_maps = self.merge_depth_maps(depthmap_vda=depth_tensors, 
-                                        depthmap_moge=moge_output['depth'],
-                                        frames=frames,
-                                        flows_fwd=flows_fwd,
-                                        flows_bwd=flows_bwd)
-        pdb.set_trace()
-        import imageio
-        import matplotlib.cm as cm
-        writer = imageio.get_writer('./temp_files/depth_merged.mp4', fps=10, macro_block_size=1, codec='libx264', ffmpeg_params=['-crf', '18'])
-        colormap = np.array(cm.get_cmap("inferno").colors)
-        d_min, d_max = merged_depth_maps.min().item(), merged_depth_maps.max().item()
-        for i in range(merged_depth_maps.shape[0]):
-            depth = merged_depth_maps[i].numpy()
-            depth_norm = ((depth - d_min) / (d_max - d_min) * 255).astype(np.uint8)
-            depth_vis = depth_norm
-            writer.append_data(depth_vis)
-        writer.close()
-        full_depth_path = os.path.join(video_dir, 'full_depth_splits')
-        full_seg_path = os.path.join(video_dir, 'full_seg_splits')
-        keypoint_depth_path = os.path.join(video_dir, 'keypoint_depth_splits')
-        keypoint_coord_path = os.path.join(video_dir, 'keypoint_coord_splits')
-
-        # Create directories if they don't exist
-        os.makedirs(full_depth_path, exist_ok=True)
-        os.makedirs(full_seg_path, exist_ok=True)
-        os.makedirs(keypoint_depth_path, exist_ok=True)
-        os.makedirs(keypoint_coord_path, exist_ok=True)
-
-
-        #Step 4: save the depth map for each frame in frames as 1D pt file
-        torch.save(merged_depth_maps, os.path.join(video_dir, os.path.join(full_depth_path, f'{frame_idx}_fulldepth.pt')))
-        #Step 7: save consistently colored segmentation for each frame in frames as RGB pt file
-        torch.save(torch.Tensor(masks), os.path.join(full_seg_path, f'{frame_idx}_segmap.pt'))
-
+        #accumulate results over ALL batches on cpu
         all_keypoint_depths = []
         all_coord_depth_maps = []
-        #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
-        #Step 6: COMPUTE and save the 3D coordinate for KEYPOINTS in each frame as RGB pt file => using FOV + (cx,cy) formula
-        for i, (depthmap, coord_map, seg_keypoint, pos_keypoint) in enumerate(zip(merged_depth_maps,
-                                                                        moge_output['points'],
-                                                                        segmentation_keypoints, 
-                                                                        pose_keypoints
-                                                                    )):
-            #Step 2.5: merge keypoints from segmentations and human/animals
-            all_keypoints = self._aggregate_keypoints(seg_keypoint, pos_keypoint)
+        all_merged_depths = []
+        all_segmentation_maps = []
 
+        for k in range(0, frames.shape[0], self.batch_size):
+            frames_cpu = frames[k:k+self.batch_size]
+            frames_cuda = frames_cpu.to(self.raft_device, non_blocking=True)\
+                                .to(memory_format=torch.channels_last)\
+                                .to(torch.float32).div(255.0)
+
+            #Step 0: extract the video FOV using the first frame with MoGe
+            self.moge_pipeline.save_video = True
+            moge_output = self.moge_pipeline(
+                                            frames=frames_cuda,
+                                            video_dir=video_dir,
+                                            video_name=video_name,
+                                            video_fps=video_fps
+                                            )
+            torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
+            estimated_intrinsics = moge_output['intrinsics'][0]
+
+            #Step 1: extract the RTM pose pixels for humans and animals in the frames
+            separate_entity_keypoints, pose_keypoints = self.pose_keypoint_pipeline(frames=frames_cpu)
+            torch.cuda.empty_cache()  # Clear GPU memory after pose estimation
+            #Step 2: extract the visual segmentations using SAM + compute keypoints for segment blobs
+            masks, segmentation_keypoints = self.segmentation_pipeline(frames=frames_cpu)
+            torch.cuda.empty_cache()  # Clear GPU memory after segmentation
             
+            #Step 3.5: merge depth map from VDA and MoGE
+            flows_fwd, flows_bwd = self.build_optical_flow_raft(frames_cuda)
+            merged_depth_maps = self.merge_depth_maps(depthmap_vda=depth_tensors[k:k+self.batch_size], 
+                                            depthmap_moge=moge_output['depth'],
+                                            frames=frames_cpu,
+                                            flows_fwd=flows_fwd,
+                                            flows_bwd=flows_bwd)
+            
+            #save the merged depth maps if needed
+            if self.save_video_depth:
+                self._save_video(depth_frames=merged_depth_maps,
+                                video_name=video_name,
+                                video_dir=video_dir, 
+                                fps=video_fps
+                )
+            #accumulate the merged depth map on cpu
+            all_merged_depths.append(merged_depth_maps.cpu())
+            all_segmentation_maps.append(masks)
+
             #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
-            #Step 6: save the 3D coordinate for KEYPOINTS in each frame as RGB pt file
-            keypoint_coord_map_estim = self._create_coord_depth_map(all_keypoints, depth_map, estimated_intrinsics)
-            keypoint_coord_map_moge = self._create_coord_depth_map_moge(all_keypoints, coord_map, depth_map)
-
-            keypoint_coord_map_merged = None
-
-            full_coord_map = self._create_full_coord_depth_map(depth_map, estimated_intrinsics)
-            keypoint_depths = keypoint_coord_map_merged[:,:,3] if keypoint_coord_map_merged.shape[1] > 0 else torch.tensor([])
+            #Step 6: COMPUTE and save the 3D coordinate for KEYPOINTS in each frame as RGB pt file => using FOV + (cx,cy) formula
+            for i, (depth_map, seg_keypoint, pos_keypoint) in enumerate(zip(merged_depth_maps,
+                                                                            segmentation_keypoints, 
+                                                                            pose_keypoints
+                                                                        )):
+                #Step 2.5: merge keypoints from segmentations and human/animals
+                all_keypoints = self._aggregate_keypoints(seg_keypoint, pos_keypoint)
+                
+                #Step 5: save the depth map for KEYPOINTS in each frame as 1D pt file
+                #Step 6: save the 3D coordinate for KEYPOINTS in each frame as RGB pt file
+                keypoint_coord_map = self._create_coord_depth_map(all_keypoints, depth_map, estimated_intrinsics)
+                
+                full_coord_map = self._create_full_coord_depth_map(depth_map, estimated_intrinsics)
+                keypoint_depths = keypoint_coord_map[:,:,3] if keypoint_coord_map.shape[1] > 0 else torch.tensor([])
+                
+                # Move to CPU to save GPU memory
+                all_keypoint_depths.append(keypoint_depths.cpu())
+                all_coord_depth_maps.append(keypoint_coord_map[:,:,:3].cpu())
+                
+                # Clear GPU memory after each iteration
+                torch.cuda.empty_cache()
             
-            # Move to CPU to save GPU memory
-            all_keypoint_depths.append(keypoint_depths.cpu())
-            all_coord_depth_maps.append(keypoint_coord_map_merged[:,:,:3].cpu())
-            
-            # Clear GPU memory after each iteration
-            torch.cuda.empty_cache()
-        
-        # Save keypoint depth values (4th channel of coord_depth_map)
-        torch.save(torch.stack(all_keypoint_depths), os.path.join(keypoint_depth_path, f'{frame_idx}_kpdepth.pt'))
-        # Save the full 4-channel coord_depth_map
-        torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
+            #after all frame batches processed: stack keypoint depths, depth maps, coord maps, segmentation maps 
+            #save merged depth map for each frame in frames as 1D pt file
+            torch.save(torch.cat(all_merged_depths, dim=0), os.path.join(video_dir, os.path.join(full_depth_path, f'{frame_idx}_fulldepth.pt')))
+            #save colored segmentation for each frame in frames as RGB pt file
+            torch.save(torch.cat(all_segmentation_maps, dim=0), os.path.join(full_seg_path, f'{frame_idx}_segmap.pt'))
+            #save keypoint depth values (4th channel of coord_depth_map)
+            torch.save(torch.stack(all_keypoint_depths), os.path.join(keypoint_depth_path, f'{frame_idx}_kpdepth.pt'))
+            #save the full 4-channel coord_depth_map
+            torch.save(torch.stack(all_coord_depth_maps), os.path.join(keypoint_coord_path, f'{frame_idx}_coorddepth.pt'))
 
+    def _save_video(self, depth_frames:torch.Tensor, video_dir:str, video_name:str, fps:int, is_depths:bool=True):
+        # Stack all depth frames
+        depth_frames = depth_frames.numpy()
+        #create save path for video depth 
+        output_video_path = os.path.join(video_dir, f'{video_name}_depth.mp4')
+        # Compute global min/max once
+        d_min = np.nanmin([np.nanmin(d) for d in depth_frames])
+        d_max = np.nanmax([np.nanmax(d) for d in depth_frames])
+        denom = max(d_max - d_min, self.epsilon)
+        writer = imageio.get_writer(
+            output_video_path, fps=fps, macro_block_size=1,
+            codec='libx264', ffmpeg_params=['-crf', '18']
+        )
+
+        try:
+            if is_depths:
+                colormap = np.array(matplotlib.colormaps.get_cmap("gray"))
+                depth_norm = (np.clip((depth_frames - d_min) / denom, 0, 1) * 255).astype(np.uint8)
+                for i in range(depth_norm.shape[0]):
+                    writer.append_data(
+                        cv2.cvtColor(
+                            cv2.applyColorMap(depth_norm[i], cv2.COLORMAP_INFERNO), 
+                            cv2.COLOR_BGR2RGB
+                        )
+                    )
+            else:
+                for rgb_frame in depth_frames:
+                    writer.append_data(rgb_frame)
+        finally:
+            writer.close()
     def _to_gray(self, img: torch.Tensor) -> torch.Tensor:
         """
         Convert frames to grayscale using torchvision.
@@ -652,12 +641,19 @@ class DepthPosePipeline:
         iters = self.iters if not iters else iters
         ema_alpha = self.ema_alpha if not ema_alpha else ema_alpha
 
+        #move depth map tensors to CUDA and move back after merging depth maps
+        use_cuda = torch.cuda.is_available()
+        device = torch.device("cuda") if use_cuda else depthmap_vda.device
+        if flows_fwd is not None:
+            flows_fwd = flows_fwd.to(device, non_blocking=True)
+        if flows_bwd is not None:
+            flows_bwd = flows_bwd.to(device, non_blocking=True)
+
         # 1) VALID MASK (static & reliable) for s,b fit
         valid_mask = None
         if frames is not None and flows_fwd is not None:
-            gray = self._to_gray(frames)                 # (T, H, W), float in [0,1]
-            T, H, W = gray.shape
-            vm = torch.ones((T, H, W), device=gray.device, dtype=torch.bool)
+            gray = self._to_gray(frames).to(device) # (T, H, W), float in [0,1]
+            vm = torch.ones((T, H, W), device=device, dtype=torch.bool)
 
             # ---- Flow-magnitude gate for frames 1..T-1 (uses forward flow t-1->t) ----
             # flows_fwd: (T-1, H, W, 2)  -> per-pixel magnitude
@@ -669,13 +665,13 @@ class DepthPosePipeline:
             grad_mag_all = self._sobel_mag(gray)         # (T, H, W) in [0,1]
             m_texture = (grad_mag_all[1:] >= grad_min_thresh)   # (T-1, H, W)
 
-            # ---- Optional photometric gate (batched) using backward flow t->t-1 ----
+            # ---- Photometric gate (batched) using backward flow t->t-1 ----
             if flows_bwd is not None:
                 B = flows_bwd.shape[0]                  # B = T-1
                 # Build normalized sampling grid for all frames at once
                 yy, xx = torch.meshgrid(
-                    torch.arange(H, device=gray.device, dtype=flows_bwd.dtype),
-                    torch.arange(W, device=gray.device, dtype=flows_bwd.dtype),
+                    torch.arange(H, device=flows_bwd.device, dtype=flows_bwd.dtype),
+                    torch.arange(W, device=flows_bwd.device, dtype=flows_bwd.dtype),
                     indexing="ij"
                 )
                 xx = xx.expand(B, H, W)
@@ -683,12 +679,14 @@ class DepthPosePipeline:
                 grid_x = (xx + flows_bwd[..., 0]) / max(W - 1, 1) * 2 - 1
                 grid_y = (yy + flows_bwd[..., 1]) / max(H - 1, 1) * 2 - 1
                 grid = torch.stack([grid_x, grid_y], dim=-1)  # (B, H, W, 2)
-            
+                del grid_x, grid_y, xx, yy #free space on GPU/cuda
+
                 prev = gray[:-1].unsqueeze(1)  # (B, 1, H, W)
                 prev_warped = F.grid_sample(prev, grid, mode="bilinear",
                                             padding_mode="border", align_corners=True)[:, 0]  # (B,H,W)
-            
                 diff = (gray[1:] - prev_warped).abs()  # (B, H, W)
+                del prev, gray
+
                 # per-frame normalization to [0,1]
                 mx = diff.view(B, -1).amax(dim=1, keepdim=True).clamp_min(self.epsilon).view(B, 1, 1)
                 diff_norm = diff / mx
@@ -698,30 +696,29 @@ class DepthPosePipeline:
 
             # ---- Combine gates (add & m_photo if you enable the commented block) ----
             vm[1:] = m_static & m_texture & m_photo
-            valid_mask = vm
-        
+            valid_mask = vm.cpu()
+            del m_static, m_texture, m_photo
+
         # 2) GUIDANCE for guided low-pass
         guidance = frames if frames is not None else None
 
-        # --- run the 3 steps ---
+        # --- run the 2 steps ---
         vda_metric, s, b = self.align_scale_shift(
             depthmap_vda, depthmap_moge, valid_mask=valid_mask,
             huber_delta=huber_delta, iters=iters, ema_alpha=ema_alpha, clip=(0.1, 100.0)
         )
+        del s, b
 
+        #move tensors to CUDA for heavy-lifting in frame fusion
+        vda_metric  = vda_metric.to(device, non_blocking=True)
+        depthmap_moge = depthmap_moge.to(device, non_blocking=True)
         fused = self.per_frame_fuse(
-            vda_metric, moge_depth=depthmap_moge, flows_bwd=flows_bwd, clip=(0.1, 100.0)
+            vda_metric, moge_depth=depthmap_moge, flows_fwd=flows_fwd, flows_bwd=flows_bwd, clip=(0.1, 100.0)
         )
+        #move result back to CPU
+        return fused.to("cpu", non_blocking=True)
 
-        #TODO: potentially get temporal stabilization working
-        stable = None
-        # stable = self.temporal_stabilize(
-        #     fused, flows_fwd=flows_fwd, flows_bwd=flows_bwd, beta=beta
-        # )
-
-        return fused
-
-    def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+    def run_video_base(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
         for frame_file in tqdm(os.listdir(frame_path)):
             self.run_pipeline(
                 frame_filename=os.path.join(frame_path, frame_file),
@@ -768,7 +765,14 @@ class DepthPosePipeline:
         """
         assert vda_depth.shape == moge_depth.shape
         T, H, W = vda_depth.shape
-        device, dtype = vda_depth.device, vda_depth.dtype
+        dtype = vda_depth.dtype
+        device = torch.device("cuda") if torch.cuda.is_available() else depthmap_vda.device
+
+        #create and move depth estimates to contiguous arrays on same 'cuda' device
+        vda_depth  = vda_depth.to(device, dtype=torch.float32, non_blocking=True).contiguous()
+        moge_depth = moge_depth.to(device, dtype=torch.float32, non_blocking=True).contiguous()
+        if valid_mask is not None and valid_mask.device != device:
+            valid_mask = valid_mask.to(device, dtype=torch.bool, non_blocking=True).contiguous()
 
         # Flatten spatial dims: (T, N)
         N = H * W
@@ -845,12 +849,13 @@ class DepthPosePipeline:
         vda_metric = (s_all.view(T,1,1) * vda_depth + b_all.view(T,1,1))
         vda_metric = self._safe_clip(vda_metric, *clip)
 
-        return vda_metric, s_all, b_all
+        return vda_metric.to("cpu", non_blocking=True), s_all.to("cpu", non_blocking=True), b_all.to("cpu", non_blocking=True)
     
     def per_frame_fuse(
         self,
         vda_metric: torch.Tensor,      # (T,H,W) after step1
         moge_depth: torch.Tensor,      # (T,H,W)
+        flows_fwd: torch.Tensor, 
         flows_bwd: torch.Tensor,
         clip: Tuple[float,float] = (0.1, 100.0),
     ) -> torch.Tensor:
@@ -893,7 +898,7 @@ class DepthPosePipeline:
         #     var[t] = seg.var(dim=0, unbiased=False)
         var = moge_depth.unsqueeze(1).var(dim=1, unbiased=False)
         W = torch.exp(-var / max(self.tau, self.epsilon))
-        Hm = self.smooth_residual_w_prev(Hm = W * Hm, flows_bwd=flows_bwd)
+        Hm = self.smooth_residual_three_tap_vec(Hm=W*Hm, flows_fwd=flows_fwd, flows_bwd=flows_bwd)
         fused = self._safe_clip(Bv + Hm,*clip)
         return fused
     
@@ -911,23 +916,47 @@ class DepthPosePipeline:
         return torch.stack([gx, gy], dim=-1).contiguous()  # (B,H,W,2)
     
     @torch.no_grad()
-    def smooth_residual_w_prev(self, Hm: torch.Tensor, flows_bwd: torch.Tensor = None) -> torch.Tensor:
+    def smooth_residual_three_tap_vec(self, Hm: torch.Tensor,
+                                    flows_fwd: torch.Tensor,  # (T-1,H,W,2) t->t+1
+                                    flows_bwd: torch.Tensor,  # (T-1,H,W,2) t->t-1
+                                    w_prev: float = 0.25,
+                                    w_cur:  float = 0.50,
+                                    w_next: float = 0.25) -> torch.Tensor:
         """
-        Hm: (T,H,W) residual to inject
-        flows_bwd: (T-1,H,W,2) backward flows t->t-1 (optional)
-        out[0]=H0; out[1:] = beta*warp(H_{t-1}, F_bwd[t-1]) + (1-beta)*H_t
+        out[t] = w_prev*warp(H_{t-1}, F_bwd[t-1]) + w_cur*H_t + w_next*warp(H_{t+1}, F_fwd[t])
+        Zero-phase-ish (less lag), fully vectorized.
         """
         T,H,W = Hm.shape
         out = Hm.clone()
         if T == 1: return out
-        if flows_bwd is None:
-            out[1:] = beta * Hm[:-1] + (1 - beta) * Hm[1:]
-            return out
-        grid = self._grid_from_flow(flows_bwd)      # (T-1,H,W,2)
-        prev = Hm[:-1].unsqueeze(1).contiguous()   # (T-1,1,H,W)
-        prev_warp = F.grid_sample(prev, grid, mode="bilinear",
+
+        # prev->t for t=1..T-1
+        grid_b = self._grid_from_flow(flows_bwd)                # (T-1,H,W,2)
+        prev = Hm[:-1].unsqueeze(1).contiguous()               # (T-1,1,H,W)
+        prev_warp = F.grid_sample(prev, grid_b, mode="bilinear",
                                 padding_mode="border", align_corners=True)[:,0]  # (T-1,H,W)
-        out[1:] = self.beta * prev_warp + (1 - self.beta) * Hm[1:]
+
+        # next->t for t=0..T-2
+        grid_f = self._grid_from_flow(flows_fwd)                # (T-1,H,W,2)
+        nxt  = Hm[1:].unsqueeze(1).contiguous()                # (T-1,1,H,W)
+        next_warp = F.grid_sample(nxt, grid_f, mode="bilinear",
+                                padding_mode="border", align_corners=True)[:,0]  # (T-1,H,W)
+
+        # assemble aligned tensors shaped (T,H,W)
+        prev_aln = torch.zeros_like(Hm); prev_aln[1:] = prev_warp
+        next_aln = torch.zeros_like(Hm); next_aln[:-1] = next_warp
+
+        # simple fixed weights:
+        w_sum = (w_prev + w_cur + w_next)
+        w_prev_map = (w_prev / w_sum)
+        w_cur_map  = (w_cur  / w_sum)
+        w_next_map = (w_next / w_sum)
+
+        out = (w_prev_map * prev_aln) + (w_cur_map * Hm) + (w_next_map * next_aln)
+
+        # boundary handling: keep ends closer to valid neighbors
+        out[0]  = (w_cur_map + w_next_map) * Hm[0]  + w_next_map * next_aln[0]
+        out[-1] = (w_prev_map) * prev_aln[-1]         + (w_cur_map + w_prev_map) * Hm[-1]
         return out
 
     def _median_residual(self, Hm: torch.Tensor) -> torch.Tensor:
@@ -936,14 +965,6 @@ class DepthPosePipeline:
         Hm_pad = torch.cat([Hm[[0]], Hm, Hm[[-1]]], dim=0)         # (T+2,H,W)
         trip = torch.stack([Hm_pad[:-2], Hm_pad[1:-1], Hm_pad[2:]], dim=0)  # (3,T,H,W)
         return trip.median(dim=0).values 
-
-    def _auto_eps_per_frame(self, depth: torch.Tensor, eps_frac: float) -> torch.Tensor: 
-        """ eps per frame = eps_frac * (range_2-98%)^2 depth: (T,H,W) -> (T,) """ 
-        T, H, W = depth.shape 
-        q02 = torch.nanquantile(depth.view(T, -1), 0.02, dim=1)
-        q98 = torch.nanquantile(depth.view(T, -1), 0.98, dim=1)
-        rng = torch.clamp(q98 - q02, min=1e-6)
-        return (eps_frac * (rng ** 2)).to(depth.dtype).to(depth.device) # (T,)
 
     def _sobel_mag(self, g: torch.Tensor) -> torch.Tensor:
         """
@@ -965,42 +986,6 @@ class DepthPosePipeline:
         d = torch.clamp(mag.view(T, -1).amax(dim=1), min=self.epsilon).view(T,1,1)
         return mag / d
    
-    def temporally_stabilize(
-        self,
-        fused: torch.Tensor,                 # (T,H,W) from step2
-        flows_fwd: Optional[torch.Tensor] = None,  # (T-1,H,W,2) forward flow (t-1->t)  [optional]
-        flows_bwd: Optional[torch.Tensor] = None,  # (T-1,H,W,2) backward flow (t->t-1) [optional]
-        beta: float = 0.75
-    ) -> torch.Tensor:
-        """
-        Motion-aware EMA across time.
-        If backward flow is provided, uses backward sampling for warping.
-        If only forward flow is provided, does a plain EMA (no warp).
-        Returns stabilized depth (T,H,W).
-        """
-        T, H, W = fused.shape
-        out = torch.empty_like(fused)
-        out[0] = fused[0]
-
-        for t in range(1, T):
-            if flows_bwd is not None:
-                D_prev_warped = self._warp_prev_to_cur(out[t-1], flows_bwd[t-1])  # (H,W)
-                # optional occlusion via fwd-bwd consistency if both flows provided
-                if flows_fwd is not None:
-                    # Warp forward flow into current frame with backward; compare sum ≈ 0
-                    fwd_warp = self._warp_prev_to_cur(flows_fwd[t-1].permute(2,0,1), flows_bwd[t-1])
-                    fwd_warp = fwd_warp.permute(1,2,0)  # (H,W,2)
-                    err = torch.linalg.norm(fwd_warp + flows_bwd[t-1], dim=-1)  # (H,W)
-                    non_occ = (err < 1.5).float()
-                else:
-                    non_occ = torch.ones((H,W), device=fused.device, dtype=fused.dtype)
-
-                out[t] = non_occ * (beta * D_prev_warped + (1 - beta) * fused[t]) + (1 - non_occ) * fused[t]
-            else:
-                # No warping available -> simple EMA
-                out[t] = beta * out[t-1] + (1 - beta) * fused[t]
-
-        return out
     
     def _box_filter_2d(self, x: torch.Tensor, r: int) -> torch.Tensor:
         """
@@ -1117,7 +1102,7 @@ class DepthPosePipeline:
 
     def _auto_eps_per_frame(self, depth: torch.Tensor, eps_frac: float) -> torch.Tensor:
         """
-        eps per frame = eps_frac * (range_2-98%)^2
+        eps per frame = eps_frac * (range_0-100%)^2
         depth: (T,H,W) -> (T,)
         """
         T, H, W = depth.shape
@@ -1130,19 +1115,26 @@ class DepthPosePipeline:
         D = torch.nan_to_num(D, nan=0.0, posinf=dmax, neginf=dmin)
         return D.clamp(dmin, dmax)
     
-    def _warp_prev_to_cur(self, D_prev: torch.Tensor, flow_t_to_prev: torch.Tensor) -> torch.Tensor:
-        """
-        D_prev: (H,W), flow_t_to_prev: (H,W,2) backward flow F_{t->t-1}.
-        returns warped (H,W).
-        """
-        H, W = D_prev.shape
-        grid = _grid_from_backward_flow(flow_t_to_prev)
-        warped = F.grid_sample(D_prev.view(1,1,H,W), grid, mode="bilinear",
-                            padding_mode="border", align_corners=True)
-        return warped.view(H, W)
+    def run_video(self, frame_path:str, video_dir:str, video_name:str, video_fps:int):
+
+        if self.mode == 'moge':
+            self.run_video_moge(
+                frame_path = frame_path,
+                video_dir = video_dir,
+                video_name = video_name,
+                video_fps = video_fps
+            )
+        elif self.mode == 'merged':
+            self.run_video_hybrid(
+                frame_path = frame_path,
+                video_dir = video_dir,
+                video_name = video_name,
+                video_fps = video_fps
+            )
+        else:
+            raise Exception(f'ERROR: mode {self.mode} is invalid')
 
 if __name__ == '__main__':
-    pdb.set_trace()
     depth_pose_pipeline = DepthPosePipeline(
         depth_encoder='vitl', 
         segmentation_model='vit_l',

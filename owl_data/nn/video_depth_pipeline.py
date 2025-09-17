@@ -33,29 +33,51 @@ class VideoDepthPipeline:
 
         #use to invert the depth map
         self.epsilon = epsilon
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.set_float32_matmul_precision("high") 
     
     def convert_tensor_to_frames(self, frames_tensor: torch.Tensor) -> np.ndarray:
         """
-        Convert torch.Tensor from tensors_from_mp4s.py format to numpy array format expected by VideoDepthAnything infer_video_depth
-        
-        Input format: [N, C, H, W] - torch.uint8 [0,255]
-        Output format: [N, H, W, C] - numpy.uint8 [0,255]
+        [N,C,H,W] torch.uint8 (CPU) -> [N,H,W,C] np.uint8 without extra copies.
         """
-        # Ensure tensor is on CPU and convert to numpy
-        frames_np = frames_tensor.cpu().numpy()
-        
-        # Convert from [N, C, H, W] to [N, H, W, C]
-        frames_np = np.transpose(frames_np, (0, 2, 3, 1))
-        
-        # Ensure uint8 format [0,255]
-        frames_np = frames_np.astype(np.uint8)
-        
-        return frames_np
+        assert frames_tensor.device.type == "cpu", "Keep frames on CPU for VDA to avoid GPU->CPU sync."
+        if frames_tensor.dtype != torch.uint8:
+            # Normalize on CPU only if needed
+            if frames_tensor.dtype.is_floating_point:
+                frames_tensor = (frames_tensor.clamp(0,1) * 255).to(torch.uint8)
+            else:
+                frames_tensor = frames_tensor.to(torch.uint8)
+
+        # NCHW -> NHWC (Torch->NumPy shares memory; make contiguous to be safe)
+        frames_np = frames_tensor.permute(0, 2, 3, 1).contiguous().numpy()
+        return frames_np  # (N,H,W,C) uint8
     
+    def batch_to_numpy_uint8(self, frames_cuda: torch.Tensor) -> np.ndarray:
+        '''
+        (N,C,H,W) on CUDA -> (N,H,W,C) NumPy uint8 via one async D2H copy.
+        '''
+        assert frames_cuda.is_cuda and frames_cuda.ndim == 4 and frames_cuda.shape[1] == 3
+        # Make it small on GPU first (uint8 NHWC)
+        x = frames_cuda
+        if x.dtype.is_floating_point:
+            x = (x.clamp(0, 1) * 255).to(torch.uint8)
+        else:
+             x = x.to(torch.uint8)
+        x = x.permute(0, 2, 3, 1).contiguous()  # (N,H,W,C) uint8 on GPU
+        # Single pinned CPU buffer + single async copy
+        cpu_buf = torch.empty_like(x, device="cpu", pin_memory=True)
+        cpu_buf.copy_(x, non_blocking=True)
+        torch.cuda.current_stream().synchronize()  # one sync for the whole batch
+        return cpu_buf.numpy()  # zero-copy NumPy view
+
     def process_video(self, frames: torch.Tensor, video_dir: str, video_name:str, target_width: int, target_height:int, video_fps: int):
         # Convert tensor to format expected by infer_video_depth
-        frames_np = self.convert_tensor_to_frames(frames)
-        self.video_depth_anything.eval()
+        if frames.device.type == "cpu":
+            frames_np = self.convert_tensor_to_frames(frames) #get (N,H,W,C) uint8
+        else:
+            frames_np = self.batch_to_numpy_uint8(frames) #get (N,H,W,C) uint8
+
         with torch.inference_mode():
             depths, fps = self.video_depth_anything.infer_video_depth(
                 frames = frames_np, 
@@ -67,8 +89,7 @@ class VideoDepthPipeline:
             )
             depths = self.replace_inf(depths)
             depths = self.invert_and_rescale_depth(depths)
-            torch.cuda.empty_cache()
-            
+        
         if self.save_video:
             save_path = os.path.join(video_dir, f'{video_name}_depth.mp4')
             save_video(depths, save_path, fps=fps, is_depths=True, grayscale=True)
@@ -84,8 +105,11 @@ class VideoDepthPipeline:
         return depths
 
     def replace_inf(self, tensor:np.array):
-        max_finite = tensor[np.isfinite(tensor)].max()
-        tensor = np.where(np.isinf(tensor), max_finite, tensor)
+        finite = np.isfinite(tensor)
+        if not finite.any():
+            return tensor  # or set to zeros
+        max_finite = tensor[finite].max()
+        tensor[~finite] = max_finite
         return tensor
 
     def __call__(self, frames: torch.Tensor, video_dir: str, video_name:str, target_width: int, target_height:int, video_fps: int):

@@ -1,0 +1,26 @@
+TODO:
+
+1. Visualize the differences between some videos that are 0MB vs those that are 500Mb.
+    - Why are some files 0MB?
+    - Why are some 500MB?
+    - Hypothesis: two separate versions of the recorder where one saves videos in folders with multiple videos, and another
+    with a single tar file for a single video. 
+    
+
+-- Agent Prompt 1:
+
+I want to run data analysis on all my TARs. Basically, we have people playing video games with our recorder software and it uploads their metadata as json, controls as CSV and the videos as .mp4 but they are placed in TAR files. The TARs are uploaded to Tigris (s3-like API) under the game-data bucket. There are examples on how to access the APi and how to overlay ontrols in the @download_tar.py file and the @overlay_controls.py  and @process_controls.py  files.
+
+Because the recorder is being constantly updated, and this recorder is being run on many users' machines, we want to make sure the data is cleaned. The goal is to make a pipeline that takes videos, cleans them, and takes the clean versions and puts them in another bucket. The original versions should stay in the original buckets of course.
+
+Before that, I want to understand some things about the .tar files. Some are 0MB and some are 500MB and some are somewhere in between. First order of business is to visualize their sizes to understand.
+
+Here are some other known issues:
+
+1. Before a certain date, footage had timestamps as ints aka the input information was totally wrong. I believe a good cutoff here is 8/27 (inclusive).
+
+2. Some people had dpi scaling issues resulting in the video taking up a small fraction of the screen so theres weird cropping with a black border in parts of the screen. This isn't nessecarily garbage data so shouldn't be entirely dropped. Instead add a field to metadata json called "scaling_issue_flag: True" (don't need to add to other data, we can just check for the keys existence), and some post processing that will resize to fit to the screen (i think you can check for constant black pixels or something)
+
+-- 1 query 2
+
+Great. This runs and it shows that after August 27th (exclusive, so 28 and onwards) there are no tars with 0MB. Before we move on, I want you to abstract common utilities in the analyze_tars.py into a utils.py file?

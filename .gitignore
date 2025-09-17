@@ -1,2 +1,5 @@
 temp_files
 ckpts
+.env
+*_paths.txt
+yolo*.pt

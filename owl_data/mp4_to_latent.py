@@ -84,10 +84,11 @@ class SequentialVideoClips(IterableDataset):
                 pass
             # fps from container; may be None
             rate = stream.average_rate
-            fps = float(rate) if rate is not None else 0.0
+            fps = float(rate) if rate else 0.0
+            fps_num = int(rate.numerator) if rate else None
+            fps_den = int(rate.denominator) if rate else None
             if fps <= 0:
                 print(f"[rank {rank} worker {wid}] Missing/invalid FPS for {path}; timestamps set to None")
-
 
             H, W = self.size
             buf = np.empty((self.T, H, W, 3), dtype=np.uint8)  # prealloc [T,H,W,3]
@@ -113,6 +114,7 @@ class SequentialVideoClips(IterableDataset):
                         "start_ts": start_ts, "end_ts": end_ts,
                         "vid_path": path, "vid_name": os.path.basename(path),
                         "vid_dir": os.path.dirname(path), "idx_in_vid": idx_in_vid,
+                        "fps": fps, "fps_numer": fps_num, "fps_denom": fps_den
                     }
                     yield {"frames": frames, "metadata": meta}
                     fill_i = 0

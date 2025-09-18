@@ -101,8 +101,9 @@ class SequentialVideoClips(IterableDataset):
             # keep codec threading conservative (avoid oversubscription with DataLoader)
             try:
                 codec = stream.codec_context
+                # Allow multi-threaded decode; 0 = auto
                 codec.thread_type = "FRAME"
-                codec.thread_count = 1
+                codec.thread_count = 0
             except Exception:
                 pass
             # fps from container; may be None
@@ -233,7 +234,7 @@ def run_multinode_encode_and_save(
         torch.save(lat_tensor_fp16, lat_path)
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f)
-    executor = ThreadPoolExecutor(max_workers=4)
+    executor = ThreadPoolExecutor(max_workers=1)
     pending = []
 
     with torch.inference_mode():

@@ -54,8 +54,9 @@ class SequentialVideoClips(IterableDataset):
         self.size = (resize_to, resize_to) if isinstance(resize_to, int) else tuple(resize_to)
 
     def __iter__(self) -> Iterator[Dict]:
-        rank = dist.get_rank()
-        world = dist.get_world_size()
+        rank = int(os.environ.get("RANK", "0"))
+        world = int(os.environ.get("WORLD_SIZE", "1"))
+        print("rank:", rank, "world size:", world)
         info = get_worker_info()
         wid, nworkers = (info.id, info.num_workers) if info else (0, 1)
 
@@ -285,7 +286,7 @@ if __name__ == "__main__":
     ap.add_argument("--src_root", required=True, help="Root directory containing source videos")
     ap.add_argument("--tgt_root", required=True, help="Root directory to mirror outputs into")
     ap.add_argument("--batch_size", type=int, default=64)
-    ap.add_argument("--num_workers", type=int, default=4)
+    ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--n_frames", type=int, default=16)
     ap.add_argument("--resize_to", type=int, nargs="+", default=[512])  # H W or single square
     ap.add_argument("--suffix", type=str, default=r"\.(?:mp4|MP4)$")

@@ -74,15 +74,7 @@ class SequentialVideoClips(IterableDataset):
 
         for path in paths:
             try:
-                container = av.open(
-                    path,
-                    options={
-                        "hwaccel": "cuda",
-                        "hwaccel_output_format": "cuda",  # keep frames in GPU memory
-                        "threads": "auto",                 # decoder internal threading
-                        "ignore_unknown": "1",
-                    }
-                )
+                container = av.open(path, options={"ignore_unknown": "1"})
             except av.AVError as e:
                 print(f"[rank {rank} worker {wid}] av.open failed: {path}\n  error: {e}")
                 continue

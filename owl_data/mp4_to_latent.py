@@ -178,7 +178,7 @@ def run_multinode_encode_and_save(
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
-    torch.backends.cudnn.benchmark = True
+    # torch.backends.cudnn.benchmark = True
 
     model = BatchedEncodingPipe(vae_cfg_path, vae_ckpt_path, dtype=torch.float16)
 

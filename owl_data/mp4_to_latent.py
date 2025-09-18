@@ -21,16 +21,11 @@ from typing import Iterator, Dict, List, Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 from tqdm import tqdm
+import av
 
 from nn.owl_image_vae import BatchedEncodingPipe
-
-
-import decord as de
-de.bridge.set_bridge('torch')  # decord returns torch tensors directly
-
 
 
 class SequentialVideoClips(IterableDataset):
@@ -72,56 +67,92 @@ class SequentialVideoClips(IterableDataset):
         if wid >= n_eff:
             return  # this worker has no data on this rank
         # Assign a contiguous chunk per worker (balances better than stride when n<nworkers)
-        paths = rank_paths[wid::n_eff]
-
-        H, W = self.size
-        # threads per Decord reader (keep small; you have multiple workers)
-        th = int(os.environ.get("DECORD_THREADS", "1"))
+        per = (n + n_eff - 1) // n_eff
+        start = wid * per
+        end = min(start + per, n)
+        paths = rank_paths[start:end]
 
         for path in paths:
             try:
-                vr = de.VideoReader(path, ctx=de.cpu(0), num_threads=th)
-            except Exception as e:
-                print(f"[rank {rank} worker {wid}] decord open failed: {path}\n  error: {e}")
+                container = av.open(path, options={"ignore_unknown": "1"})
+            except av.AVError as e:
+                print(f"[rank {rank} worker {wid}] av.open failed: {path}\n  error: {e}")
                 continue
 
-            n_frames_total = len(vr)
-            # fps (may be None/0 if missing)
-            try:
-                fps = float(vr.get_avg_fps()) or 0.0
-            except Exception:
-                fps = 0.0
-            fps_num = None; fps_den = None  # not exposed; keep for API parity
+            # Demux ONLY video/audio; drop data (e.g., GoPro tmcd) at source
+            for s in container.streams:
+                if getattr(s, "type", None) not in {"video", "audio"}:
+                    s.discard = "all"
 
-            idx_in_vid = 0
-            # sequential, non-overlap clips of length T
-            for start in range(0, max(0, n_frames_total - self.T + 1), self.T):
-                idx = list(range(start, start + self.T))
+            # ensure there is at least one video stream
+            vstreams = list(container.streams.video)
+            if not vstreams:
                 try:
-                    clip = vr.get_batch(idx)  # [T,H0,W0,3], uint8, torch tensor (bridge)
-                except Exception as e:
-                    print(f"[rank {rank} worker {wid}] decord get_batch failed: {path} @ {start}: {e}")
-                    continue
-                # Resize if needed (keep uint8 output like before)
-                if clip.shape[1] != H or clip.shape[2] != W:
-                    clip = F.interpolate(
-                        clip.permute(0,3,1,2).float(), size=(H,W), mode="bilinear", align_corners=False
-                    ).round_().clamp_(0,255).to(torch.uint8).permute(0,2,3,1)
+                    fmt = getattr(container.format, "name", "?")
+                    long = getattr(container.format, "long_name", "?")
+                except Exception:
+                    fmt, long = "?", "?"
+                print(f"[rank {rank} worker {wid}] no video streams: {path}\n"
+                      f"  container: {fmt} ({long})  all_streams={len(container.streams)}")
+                container.close()
+                continue
+            # pick the first (or customize selection if needed)
+            stream = vstreams[0]
+            # keep codec threading conservative (avoid oversubscription with DataLoader)
+            try:
+                codec = stream.codec_context
+                # Allow multi-threaded decode; 0 = auto
+                codec.thread_type = "FRAME"
+                codec.thread_count = 0
+            except Exception:
+                pass
+            # fps from container; may be None
+            rate = stream.average_rate
+            fps = float(rate) if rate else 0.0
+            fps_num = int(rate.numerator) if rate else None
+            fps_den = int(rate.denominator) if rate else None
+            if fps <= 0:
+                print(f"[rank {rank} worker {wid}] Missing/invalid FPS for {path}; timestamps set to None")
 
-                end_frame = start + (self.T - 1)
-                start_ts = (start / fps) if fps > 0 else None
-                end_ts   = (end_frame / fps) if fps > 0 else None
-                meta = {
-                    "start_frame": int(start), "end_frame": int(end_frame),
-                    "start_ts": start_ts, "end_ts": end_ts,
-                    "vid_path": path, "vid_name": os.path.basename(path),
-                    "vid_dir": os.path.dirname(path), "idx_in_vid": idx_in_vid,
-                    "fps": fps, "fps_numer": fps_num, "fps_denom": fps_den
-                }
-                # Ensure contiguous [T,H,W,C] uint8 like before
-                frames = clip.contiguous()
-                yield {"frames": frames, "metadata": meta}
-                idx_in_vid += 1
+            H, W = self.size
+            buf = np.empty((self.T, H, W, 3), dtype=np.uint8)  # prealloc [T,H,W,3]
+            fill_i = 0
+            idx_in_vid = 0
+            i = 0
+            dec_iter = container.decode(stream)
+            while True:
+                try:
+                    frame = next(dec_iter)  # <-- isolate try/except to the failing line
+                except StopIteration:
+                    break
+                except av.error.InvalidDataError as e:
+                    print(f"[rank {rank} worker {wid}] decode error for {path}: {type(e).__name__}: {e}")
+                    break
+                # Use FFmpeg/libswscale to convert + resize on CPU efficiently
+                frm = frame.reformat(width=W, height=H, format="rgb24")
+                rgb = frm.to_ndarray()  # (H,W,3) uint8
+                buf[fill_i] = rgb
+                fill_i += 1
+
+                if fill_i == self.T:
+                    end_frame = i
+                    start_frame = end_frame - (self.T - 1)
+                    start_ts = (start_frame / fps) if fps > 0 else None
+                    end_ts = (end_frame / fps) if fps > 0 else None
+
+                    frames = torch.from_numpy(buf.copy())  # [T,H,W,C], uint8 (copy to detach from ring buffer)
+                    meta = {
+                        "start_frame": int(start_frame), "end_frame": int(end_frame),
+                        "start_ts": start_ts, "end_ts": end_ts,
+                        "vid_path": path, "vid_name": os.path.basename(path),
+                        "vid_dir": os.path.dirname(path), "idx_in_vid": idx_in_vid,
+                        "fps": fps, "fps_numer": fps_num, "fps_denom": fps_den
+                    }
+                    yield {"frames": frames, "metadata": meta}
+                    fill_i = 0
+                    idx_in_vid += 1
+                i += 1
+            container.close()
 
 
 def _collate_keep_meta(batch):

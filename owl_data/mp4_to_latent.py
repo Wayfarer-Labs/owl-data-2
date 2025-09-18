@@ -95,7 +95,15 @@ class SequentialVideoClips(IterableDataset):
             fill_i = 0
             idx_in_vid = 0
             i = 0
-            for frame in container.decode(stream):
+            dec_iter = container.decode(stream)
+            while True:
+                try:
+                    frame = next(dec_iter)  # <-- isolate try/except to the failing line
+                except StopIteration:
+                    break
+                except av.AVError as e:
+                    print(f"[rank {rank} worker {wid}] decode error for {path}: {type(e).__name__}: {e}")
+                    break
                 # Use FFmpeg/libswscale to convert + resize on CPU efficiently
                 frm = frame.reformat(width=W, height=H, format="rgb24")
                 rgb = frm.to_ndarray()  # (H,W,3) uint8

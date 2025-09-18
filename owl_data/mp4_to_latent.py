@@ -101,7 +101,7 @@ class SequentialVideoClips(IterableDataset):
                     frame = next(dec_iter)  # <-- isolate try/except to the failing line
                 except StopIteration:
                     break
-                except av.AVError as e:
+                except av.error.InvalidDataError as e:
                     print(f"[rank {rank} worker {wid}] decode error for {path}: {type(e).__name__}: {e}")
                     break
                 # Use FFmpeg/libswscale to convert + resize on CPU efficiently

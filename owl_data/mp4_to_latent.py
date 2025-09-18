@@ -57,8 +57,8 @@ class SequentialVideoClips(IterableDataset):
 
         for path in paths:
             try:
-                container = av.open(path)
-            except av.AVError:
+                container = av.open(path, options={"ignore_unknown": "1"})
+            except av.AVError as e:
                 print(f"[rank {rank} worker {wid}] av.open failed: {path}\n  error: {e}")
                 continue
             # ensure there is at least one video stream

@@ -1,5 +1,5 @@
 """
-torchrun --nproc_per_node=8 mp4_to_latents.py \
+torchrun --nproc_per_node=8 mp4_to_latent.py \
   --src_root /mnt/data/waypoint_1/datasets/kinetics700/Kinetics-700/Kinetics700_part_001/test/ \
   --tgt_root /mnt/data/lapp0/test_kinetics_700 \
   --vae_cfg_path /mnt/data/shahbuland/owl-vaes/configs/waypoint_1/rgb_only.yml \
@@ -7,7 +7,7 @@ torchrun --nproc_per_node=8 mp4_to_latents.py \
 """
 """
 # For distilled encoder:
-torchrun --nproc_per_node=8 mp4_to_latents.py \
+torchrun --nproc_per_node=8 mp4_to_latent.py \
   --src_root /mnt/data/waypoint_1/datasets/kinetics700/Kinetics-700/Kinetics700_part_001/test/ \
   --tgt_root /mnt/data/lapp0/test_kinetics_700_distilled_decoder \
   --vae_cfg_path /mnt/data/shahbuland/owl-vaes/configs/waypoint_1/rgb_enc_distill.yml \
@@ -59,9 +59,22 @@ class SequentialVideoClips(IterableDataset):
             try:
                 container = av.open(path)
             except av.AVError:
+                print(f"[rank {rank} worker {wid}] av.open failed: {path}\n  error: {e}")
                 continue
-            # choose first video stream
-            stream = container.streams.video[0]
+            # ensure there is at least one video stream
+            vstreams = list(container.streams.video)
+            if not vstreams:
+                try:
+                    fmt = getattr(container.format, "name", "?")
+                    long = getattr(container.format, "long_name", "?")
+                except Exception:
+                    fmt, long = "?", "?"
+                print(f"[rank {rank} worker {wid}] no video streams: {path}\n"
+                      f"  container: {fmt} ({long})  all_streams={len(container.streams)}")
+                container.close()
+                continue
+            # pick the first (or customize selection if needed)
+            stream = vstreams[0]
             # keep codec threading conservative (avoid oversubscription with DataLoader)
             try:
                 codec = stream.codec_context
@@ -108,6 +121,13 @@ class SequentialVideoClips(IterableDataset):
             container.close()
 
 
+def _collate_keep_meta(batch):
+    return {
+        "frames": torch.stack([s["frames"] for s in batch], dim=0),  # [B,T,H,W,C]
+        "metadata": [s["metadata"] for s in batch],
+    }
+
+
 def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
                    n_frames: int = 16, resize_to: int | Tuple[int, int] = 256,
                    suffix: str = ".mp4") -> DataLoader:
@@ -119,7 +139,9 @@ def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
         num_workers=num_workers,
         prefetch_factor=8,
         pin_memory=True,
+        pin_memory_device=None,
         persistent_workers=num_workers > 0,
+        collate_fn=_collate_keep_meta
     )
 
 
@@ -171,6 +193,7 @@ def run_multinode_encode_and_save(
     )
 
     # Progress (rank 0 only)
+    print("running on rank", rank)
     pbar = tqdm(unit="frames", dynamic_ncols=True, disable=(rank != 0))
 
     # Async saver (CPU thread pool)
@@ -186,9 +209,6 @@ def run_multinode_encode_and_save(
             frames = batch["frames"].to(device, non_blocking=True)                # [B,T,H,W,C] uint8
             metas = batch["metadata"]                                             # dict-of-lists or list
             B, T, H, W, C = frames.shape
-            # If default_collate converted list[dict] -> dict[list], restore list[dict]
-            if isinstance(metas, dict):
-                metas = [{k: v[i] for k, v in metas.items()} for i in range(B)]
             frames = frames.permute(0, 1, 4, 2, 3).contiguous().to(torch.float16)           # [B,T,C,H,W] fp32
             frames = frames.div_(255.0).mul_(2.0).sub_(1.0).view(B*T, C, H, W)    # [-1,1] fp32
 
@@ -232,10 +252,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--src_root", required=True, help="Root directory containing source videos")
     ap.add_argument("--tgt_root", required=True, help="Root directory to mirror outputs into")
-    ap.add_argument("--batch_size", type=int, default=256)
+    ap.add_argument("--batch_size", type=int, default=512)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--n_frames", type=int, default=16)
-    ap.add_argument("--resize_to", type=int, nargs="+", default=[256])  # H W or single square
+    ap.add_argument("--resize_to", type=int, nargs="+", default=[512])  # H W or single square
     ap.add_argument("--suffix", type=str, default=".mp4")
     ap.add_argument("--vae_cfg_path", type=str, required=True)
     ap.add_argument("--vae_ckpt_path", type=str, required=True)

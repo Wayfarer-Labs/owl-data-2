@@ -244,8 +244,8 @@ if __name__ == "__main__":
         "--bucket", "game-data",
         "--prefix", "",
         "--range", "0,5",
-        "--range", "185,200",
-        "--range", "200,500",
+        # "--range", "185,200",
+        "--range", "205,500",
         "--limit", "20",
     ]
-    main() 
+    main()

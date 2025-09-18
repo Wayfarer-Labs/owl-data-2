@@ -24,3 +24,40 @@ Here are some other known issues:
 -- 1 query 2
 
 Great. This runs and it shows that after August 27th (exclusive, so 28 and onwards) there are no tars with 0MB. Before we move on, I want you to abstract common utilities in the analyze_tars.py into a utils.py file?
+
+-- 1 query 3
+
+Actually, I want you to rename the analyze_small_tars.py into analyze_tars_by_size.py 
+
+And then, I want to be able to specify ranges of sizes. So for example, I want to analyze tars that are between 0 and 5 MB, and tars that are between 185 and 200 MB, and tars that are between 200 and 500MB.
+
+
+owl_data/waypoint_1/game_data/analyze_tars_by_size.py \
+  --bucket 'game-data' --prefix '' \
+  --range 0,5 --range 185,200 --range 200,500 \
+  --limit 20
+
+
+I want to make a manifest that will associate a tar to a set of flags that speak to their data quality. The end-goal
+of this this manifest is to be used to filter out which tars to read for a dataloader that 
+
+1. is_dpi_scale_issue - DPI scaling issue where the video takes up a small portion of the screen 
+3. is_video_empty - Video that is 0MB long
+4. is_video_mostly_dark - Video that is all black or mostly (?) black
+5. is_video_legacy_aug28 - Video that was recorded with a version of the software before August 28th (timestamp corrupted)
+6. TODO: Will split them into smaller TARs for 1:1 with video. TARs that are 200MB vs. TARs that are smaller (multiple mp4s packed into TAR vs single mp4 per TAR)
+6. is_video_kbm , is_video_controller - Flags that distinguish if a video is controlled with a keyboard and mouse (kbm) or a controller.
+7. is_video_mostly_menu , menu_flag_threshold , video_menu_percent - Flags that distinguuish if a video is mostly dominated by menu screens. 
+
+7. Distinguishing controller input vs. KB+M and putting that in metadata
+8. is_video_first_person , is_video_third_person - Flags to distinguish between First-person shooter vs. 3PS and putting that in metadata
+
+Flags:
+
+is_dpi_scale_issue
+is_video_empty
+is_video_mostly_dark
+is_video_legacy_aug28
+is_video_kbm is_video_controller
+is_video_mostly_menu menu_flag_threshold video_menu_percent
+is_video_first_person is_video_third_person

@@ -209,9 +209,7 @@ def run_multinode_encode_and_save(
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
 
-    # Now initialize DDP
-    opts = dist.NCCLBackendOptions(device_id=local_rank)
-    dist.init_process_group(backend="nccl", init_method="env://", pg_options=opts)
+    dist.init_process_group(backend="nccl", init_method="env://", device_id=local_rank)
     rank = dist.get_rank()
 
     model = BatchedEncodingPipe(vae_cfg_path, vae_ckpt_path, dtype=torch.float16)

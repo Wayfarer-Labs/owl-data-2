@@ -23,6 +23,8 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import av
 
 from nn.owl_image_vae import BatchedEncodingPipe
@@ -223,10 +225,22 @@ def run_multinode_encode_and_save(
     print("running on rank", rank)
     pbar = tqdm(unit="frames", dynamic_ncols=True, disable=(rank != 0))
 
-    def _save_lat_meta(lat_tensor_fp16, lat_path, meta_dict, meta_path):
-        torch.save(lat_tensor_fp16, lat_path)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta_dict, f)
+    # async writer pool with bounded in-flight saves
+    io_pool = ThreadPoolExecutor(max_workers=8)
+    INFLIGHT_MAX = 256
+    pending = []
+
+    def _save_lat_meta_async(lat_tensor_fp16, lat_path, meta_dict, meta_path):
+        lat_p = Path(lat_path); meta_p = Path(meta_path)
+        lat_tmp  = lat_p.with_suffix(lat_p.suffix + ".tmp")
+        meta_tmp = meta_p.with_suffix(meta_p.suffix + ".tmp")
+        def job():
+            torch.save(lat_tensor_fp16, lat_tmp)
+            with open(meta_tmp, "w", encoding="utf-8") as f:
+                json.dump(meta_dict, f)
+            lat_tmp.replace(lat_p)
+            meta_tmp.replace(meta_p)
+        return io_pool.submit(job)
 
     with torch.inference_mode():
         for batch in loader:
@@ -256,12 +270,19 @@ def run_multinode_encode_and_save(
                 lat_path  = os.path.join(out_dir, f"{stem}_rgblatent.pt")
                 meta_path = os.path.join(out_dir, f"{stem}_meta.json")
                 # Dispatch async save to thread pool (I/O won’t block GPU compute)
-                _save_lat_meta(lat_b, lat_path, meta, meta_path)
+                pending.append(_save_lat_meta_async(lat_b, lat_path, meta, meta_path))
+                if len(pending) >= INFLIGHT_MAX:
+                    print("exceeded inflight max")
+                    pending[0].result(); pending.pop(0)
+                # _save_lat_meta(lat_b, lat_path, meta, meta_path)
 
             if rank == 0:
                 pbar.update(B * T)
 
     # Drain async saves, then cleanup
+    for f in pending:
+        f.result()
+    io_pool.shutdown(wait=True)
     if rank == 0:
         pbar.close()
     dist.barrier()

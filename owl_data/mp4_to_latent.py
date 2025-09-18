@@ -174,7 +174,8 @@ def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
         num_workers=num_workers,
         prefetch_factor=4,
         pin_memory=True,
-        collate_fn=_collate_keep_meta
+        collate_fn=_collate_keep_meta,
+        multiprocessing_context="spawn",
     )
 
 
@@ -209,7 +210,11 @@ def run_multinode_encode_and_save(
     device = torch.device("cuda", local_rank)
 
     # Now initialize DDP
-    dist.init_process_group(backend="nccl", init_method="env://")
+    dist.init_process_group(
+        backend="nccl",
+        init_method="env://",
+        pg_options=dist.ProcessGroupNCCL.Options(device_id=local_rank),
+    )
     rank = dist.get_rank()
 
     model = BatchedEncodingPipe(vae_cfg_path, vae_ckpt_path, dtype=torch.float16)

@@ -273,9 +273,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--src_root", required=True, help="Root directory containing source videos")
     ap.add_argument("--tgt_root", required=True, help="Root directory to mirror outputs into")
-    ap.add_argument("--batch_size", type=int, default=64)
+    ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--num_workers", type=int, default=4)
-    ap.add_argument("--n_frames", type=int, default=16)
+    ap.add_argument("--n_frames", type=int, default=64)
     ap.add_argument("--resize_to", type=int, nargs="+", default=[512])  # H W or single square
     ap.add_argument("--suffix", type=str, default=r"\.(?:mp4|MP4)$")
     ap.add_argument("--vae_cfg_path", type=str, required=True)

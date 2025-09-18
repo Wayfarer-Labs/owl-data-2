@@ -66,11 +66,8 @@ class SequentialVideoClips(IterableDataset):
         n_eff = min(nworkers, max(1, n))
         if wid >= n_eff:
             return  # this worker has no data on this rank
-        # Assign a contiguous chunk per worker (balances better than stride when n<nworkers)
-        per = (n + n_eff - 1) // n_eff
-        start = wid * per
-        end = min(start + per, n)
-        paths = rank_paths[start:end]
+
+        paths = rank_paths[wid::n_eff]
 
         for path in paths:
             try:
@@ -103,7 +100,7 @@ class SequentialVideoClips(IterableDataset):
                 codec = stream.codec_context
                 # Allow multi-threaded decode; 0 = auto
                 codec.thread_type = "FRAME"
-                codec.thread_count = 0
+                codec.thread_count = 6
             except Exception:
                 pass
             # fps from container; may be None
@@ -129,8 +126,7 @@ class SequentialVideoClips(IterableDataset):
                     print(f"[rank {rank} worker {wid}] decode error for {path}: {type(e).__name__}: {e}")
                     break
                 # Use FFmpeg/libswscale to convert + resize on CPU efficiently
-                frm = frame.reformat(width=W, height=H, format="rgb24")
-                rgb = frm.to_ndarray()  # (H,W,3) uint8
+                rgb = frame.to_ndarray(format="rgb24", width=W, height=H)
                 buf[fill_i] = rgb
                 fill_i += 1
 

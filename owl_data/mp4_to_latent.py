@@ -76,7 +76,7 @@ class SequentialVideoClips(IterableDataset):
 
         H, W = self.size
         # threads per Decord reader (keep small; you have multiple workers)
-        th = int(os.environ.get("DECORD_THREADS", "2"))
+        th = int(os.environ.get("DECORD_THREADS", "1"))
 
         for path in paths:
             try:
@@ -101,7 +101,7 @@ class SequentialVideoClips(IterableDataset):
                     clip = vr.get_batch(idx)  # [T,H0,W0,3], uint8, torch tensor (bridge)
                 except Exception as e:
                     print(f"[rank {rank} worker {wid}] decord get_batch failed: {path} @ {start}: {e}")
-                    break
+                    continue
                 # Resize if needed (keep uint8 output like before)
                 if clip.shape[1] != H or clip.shape[2] != W:
                     clip = F.interpolate(

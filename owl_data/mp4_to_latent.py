@@ -53,7 +53,16 @@ class SequentialVideoClips(IterableDataset):
 
         # 1) shard by rank, 2) shard by worker (disjoint coverage, supports num_workers>0)
         rank_paths = self.paths[rank::world]
-        paths = rank_paths[wid::nworkers]
+        # Limit effective workers to avoid empty shards.
+        n = len(rank_paths)
+        n_eff = min(nworkers, max(1, n))
+        if wid >= n_eff:
+            return  # this worker has no data on this rank
+        # Assign a contiguous chunk per worker (balances better than stride when n<nworkers)
+        per = (n + n_eff - 1) // n_eff
+        start = wid * per
+        end = min(start + per, n)
+        paths = rank_paths[start:end]
 
         for path in paths:
             try:
@@ -156,7 +165,6 @@ def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
         prefetch_factor=4,
         pin_memory=True,
         pin_memory_device=None,
-        persistent_workers=num_workers > 0,
         collate_fn=_collate_keep_meta
     )
 

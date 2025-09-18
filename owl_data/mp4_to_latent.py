@@ -174,7 +174,6 @@ def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
         num_workers=num_workers,
         prefetch_factor=4,
         pin_memory=True,
-        pin_memory_device=None,
         collate_fn=_collate_keep_meta
     )
 

@@ -74,7 +74,15 @@ class SequentialVideoClips(IterableDataset):
 
         for path in paths:
             try:
-                container = av.open(path, options={"ignore_unknown": "1"})
+                container = av.open(
+                    path,
+                    options={
+                        "hwaccel": "cuda",
+                        "hwaccel_output_format": "cuda",  # keep frames in GPU memory
+                        "threads": "auto",                 # decoder internal threading
+                        "ignore_unknown": "1",
+                    }
+                )
             except av.AVError as e:
                 print(f"[rank {rank} worker {wid}] av.open failed: {path}\n  error: {e}")
                 continue
@@ -171,7 +179,7 @@ def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
         ds,
         batch_size=batch_size,
         num_workers=num_workers,
-        prefetch_factor=4,
+        prefetch_factor=8,
         pin_memory=True,
         collate_fn=_collate_keep_meta,
         multiprocessing_context="spawn",

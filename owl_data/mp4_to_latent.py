@@ -61,6 +61,12 @@ class SequentialVideoClips(IterableDataset):
             except av.AVError as e:
                 print(f"[rank {rank} worker {wid}] av.open failed: {path}\n  error: {e}")
                 continue
+
+            # Demux ONLY video/audio; drop data (e.g., GoPro tmcd) at source
+            for s in container.streams:
+                if getattr(s, "type", None) not in {"video", "audio"}:
+                    s.discard = "all"
+
             # ensure there is at least one video stream
             vstreams = list(container.streams.video)
             if not vstreams:

@@ -15,7 +15,7 @@ torchrun --nproc_per_node=8 mp4_to_latent.py \
 """
 
 
-import os, glob, json
+import os, glob, json, re
 from typing import Iterator, Dict, List, Tuple
 
 import numpy as np
@@ -38,7 +38,15 @@ class SequentialVideoClips(IterableDataset):
     """
     def __init__(self, root_dir: str, n_frames: int = 16,
                  resize_to: int | Tuple[int, int] = 256, suffix: str = ".mp4"):
-        self.paths: List[str] = glob.glob(os.path.join(root_dir, f"**/*{suffix}"), recursive=True)
+
+        pat = re.compile(suffix)
+        self.paths: List[str] = [
+            os.path.join(dp, fn)
+            for dp, _, fns in os.walk(root_dir)
+            for fn in fns
+            if pat.search(fn)
+        ]
+
         self.paths.sort()
         if not self.paths:
             raise FileNotFoundError(f"No '{suffix}' videos under {root_dir}")
@@ -129,7 +137,7 @@ class SequentialVideoClips(IterableDataset):
                     end_frame = i
                     start_frame = end_frame - (self.T - 1)
                     start_ts = (start_frame / fps) if fps > 0 else None
-                    end_ts = (end_frame   / fps) if fps > 0 else None
+                    end_ts = (end_frame / fps) if fps > 0 else None
 
                     frames = torch.from_numpy(buf.copy())  # [T,H,W,C], uint8 (copy to detach from ring buffer)
                     meta = {
@@ -155,7 +163,7 @@ def _collate_keep_meta(batch):
 
 def get_dataloader(src_root: str, batch_size: int = 32, num_workers: int = 8,
                    n_frames: int = 16, resize_to: int | Tuple[int, int] = 256,
-                   suffix: str = ".mp4") -> DataLoader:
+                   suffix: str = r"\.(?:mp4|MP4)$") -> DataLoader:
     ds = SequentialVideoClips(root_dir=src_root, n_frames=n_frames,
                               resize_to=resize_to, suffix=suffix)
     return DataLoader(
@@ -183,7 +191,7 @@ def run_multinode_encode_and_save(
     num_workers: int = 16,
     n_frames: int = 16,
     resize_to: int | Tuple[int, int] = 256,
-    suffix: str = ".mp4",
+    suffix: str = r"\.(?:mp4|MP4)$",
     vae_cfg_path: str = "",
     vae_ckpt_path: str = "",
 ):
@@ -277,10 +285,10 @@ if __name__ == "__main__":
     ap.add_argument("--src_root", required=True, help="Root directory containing source videos")
     ap.add_argument("--tgt_root", required=True, help="Root directory to mirror outputs into")
     ap.add_argument("--batch_size", type=int, default=64)
-    ap.add_argument("--num_workers", type=int, default=8)
+    ap.add_argument("--num_workers", type=int, default=4)
     ap.add_argument("--n_frames", type=int, default=16)
     ap.add_argument("--resize_to", type=int, nargs="+", default=[512])  # H W or single square
-    ap.add_argument("--suffix", type=str, default=".mp4")
+    ap.add_argument("--suffix", type=str, default=r"\.(?:mp4|MP4)$")
     ap.add_argument("--vae_cfg_path", type=str, required=True)
     ap.add_argument("--vae_ckpt_path", type=str, required=True)
     args = ap.parse_args()

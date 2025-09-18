@@ -1,19 +1,20 @@
 import torch
 import sys
 
+
 class EncodingPipe:
     def __init__(
-        self, cfg_path, ckpt_path
+            self, cfg_path, ckpt_path, dtype=torch.bfloat16
     ):
         sys.path.append("../owl-vaes/")
         from owl_vaes import from_pretrained
 
         model = from_pretrained(cfg_path, ckpt_path)
-        model = model.encoder.eval().bfloat16().cuda()
-        self.model = torch.compile(model, mode='max-autotune', dynamic=False, fullgraph=True)
+        model = model.encoder.eval().to(dtype).cuda()
+        self.model = torch.compile(model, mode='max-autotune-no-cudagraphs', dynamic=False, fullgraph=True)
 
         self.cached_shape = None
-    
+
     @torch.no_grad()
     def __call__(self, x):
         if self.cached_shape is None:
@@ -24,10 +25,10 @@ class EncodingPipe:
         return self.model(x).clone()
 
 class BatchedEncodingPipe:
-    def __init__(self, cfg_path, ckpt_path, batch_size=128):
-        self.pipe = EncodingPipe(cfg_path, ckpt_path)
+    def __init__(self, cfg_path, ckpt_path, batch_size=128, dtype=torch.bfloat16):
+        self.pipe = EncodingPipe(cfg_path, ckpt_path, dtype=dtype)
         self.batch_size = batch_size
-    
+
     @torch.no_grad()
     def __call__(self, x):
         n = x.shape[0]

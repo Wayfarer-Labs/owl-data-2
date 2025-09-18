@@ -24,7 +24,6 @@ import torch.distributed as dist
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
 from tqdm import tqdm
 import av
-from concurrent.futures import ThreadPoolExecutor
 
 from nn.owl_image_vae import BatchedEncodingPipe
 
@@ -228,13 +227,10 @@ def run_multinode_encode_and_save(
     print("running on rank", rank)
     pbar = tqdm(unit="frames", dynamic_ncols=True, disable=(rank != 0))
 
-    # Async saver (CPU thread pool)
     def _save_lat_meta(lat_tensor_fp16, lat_path, meta_dict, meta_path):
         torch.save(lat_tensor_fp16, lat_path)
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f)
-    executor = ThreadPoolExecutor(max_workers=1)
-    pending = []
 
     with torch.inference_mode():
         for batch in loader:
@@ -264,15 +260,12 @@ def run_multinode_encode_and_save(
                 lat_path  = os.path.join(out_dir, f"{stem}_rgblatent.pt")
                 meta_path = os.path.join(out_dir, f"{stem}_meta.json")
                 # Dispatch async save to thread pool (I/O won’t block GPU compute)
-                pending.append(executor.submit(_save_lat_meta, lat_b, lat_path, meta, meta_path))
+                _save_lat_meta(lat_b, lat_path, meta, meta_path)
 
             if rank == 0:
                 pbar.update(B * T)
 
     # Drain async saves, then cleanup
-    for fut in pending:
-        fut.result()
-    executor.shutdown(wait=True)
     if rank == 0:
         pbar.close()
     dist.barrier()

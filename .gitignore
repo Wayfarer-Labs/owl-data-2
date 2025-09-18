@@ -3,3 +3,4 @@ ckpts
 .env
 *_paths.txt
 yolo*.pt
+__pycache__/

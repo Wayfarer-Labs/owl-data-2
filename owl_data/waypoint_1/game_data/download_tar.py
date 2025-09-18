@@ -1,9 +1,9 @@
 import boto3
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 import os
-
+from dotenv import load_dotenv
 load_dotenv()
+
 
 bucket_name = "game-data"
 after_date = datetime(2025, 8, 28, tzinfo=timezone.utc)

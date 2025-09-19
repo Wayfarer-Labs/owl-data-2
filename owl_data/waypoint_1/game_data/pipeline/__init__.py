@@ -2,7 +2,7 @@ import logging
 import sys
 import os
 
-log_dir = '/mnt/data/sami/logs'
+log_dir = '~/logs'
 os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(
@@ -10,6 +10,6 @@ logging.basicConfig(
     format='%(asctime)s - %(threadName)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('/mnt/data/sami/logs/game_data_pipeline.log')
+        logging.FileHandler(os.path.join(log_dir, 'game_data_pipeline.log'))
     ]
 )

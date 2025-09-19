@@ -1,8 +1,16 @@
 import io
-import logging
+import os
+import tarfile
+import json
+import gc
 import av
+from collections import defaultdict
+import logging
 import numpy as np
 from typing import Optional
+
+from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+
 
 def _sample_frames_at_stride(
     container: av.container.Container,
@@ -110,40 +118,3 @@ def sample_frames_from_bytes(
             sampled_data[key] = np.array([])
 
     return sampled_data
-
-def main():
-    import sys
-    video_path = "/home/sky/owl-data-2/owl_data/waypoint_1/game_data/tars_by_size/205_500MB/4e3e5cbc95e64420/000000.mp4"
-
-    try:
-        logging.info(f"Reading video file from: {video_path}")
-        with open(video_path, 'rb') as f:
-            video_bytes = f.read()
-    except FileNotFoundError:
-        logging.error(f"Error: The file was not found at '{video_path}'")
-        logging.error("Please update the 'video_path' variable in this script.")
-        sys.exit(1)
-
-    # --- Define the desired strides and frame counts here ---
-    # Key = stride in seconds, Value = number of frames to sample
-    strides_to_sample = {
-        3: 15,  # Sample 15 frames, 3 seconds apart
-        30: 15, # Sample 15 frames, 30 seconds apart
-        60: 5   # Sample 5 frames, 60 seconds apart
-    }
-
-    # Run the frame sampling function with the new specification
-    sampled_frames = sample_frames_from_bytes(video_bytes, strides_to_sample)
-
-    # Print the results to verify
-    print("\n--- Frame Sampling Results ---")
-    for name, array in sampled_frames.items():
-        if array.size > 0:
-            # Shape is (num_frames, channels, height, width)
-            print(f"'{name}': Found {array.shape[0]} frames with shape {array.shape}")
-        else:
-            print(f"'{name}': No frames were sampled (video might be too short for this stride).")
-    print("----------------------------")
-
-if __name__ == "__main__":
-    main()

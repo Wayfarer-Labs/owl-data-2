@@ -20,7 +20,7 @@ from owl_data.waypoint_1.game_data.pipeline.checks import (
     check_for_menus
 )
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
-from owl_data.waypoint_1.game_data.pipeline.utils import _extract_and_sample
+from owl_data.waypoint_1.game_data.pipeline.utils import extract_and_sample
 
 
 # --- Configuration ---
@@ -110,7 +110,7 @@ def processor_task(
         record = {"tar_url": s3_key, "processed_time": pd.Timestamp.now()}
         try:
             logging.info(f"Processing '{s3_key}'...")
-            extracted_data = _extract_and_sample(tar_bytes, s3_key)
+            extracted_data = extract_and_sample(tar_bytes, s3_key)
             quality_flags = _run_all_quality_checks(extracted_data)
             record.update(quality_flags)
             logging.info(f"Finished processing '{s3_key}'.")

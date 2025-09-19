@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BUCKET_NAME = "game-data"
-TASK_LIST_DIR = '/mnt/data/sami/cache/game_data_manifests'
+TASK_LIST_DIR = './'
 TASK_LIST_PATH = os.path.join(TASK_LIST_DIR, 'task_list.txt')
 
 # Set up basic logging to the console

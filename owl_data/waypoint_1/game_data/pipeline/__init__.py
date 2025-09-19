@@ -2,7 +2,7 @@ import logging
 import sys
 import os
 
-log_dir = '~/logs'
+log_dir = '/mnt/data/sami/logs'
 os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(

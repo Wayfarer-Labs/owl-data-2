@@ -1,16 +1,10 @@
-import sys
 import os
-import tarfile
-import io
-import json
-import gc
 import queue
 import threading
 import logging
 
 from dotenv import load_dotenv
 import boto3
-import numpy as np
 import pandas as pd
 from botocore.exceptions import ClientError
 
@@ -20,7 +14,7 @@ from owl_data.waypoint_1.game_data.pipeline.checks import (
     check_for_menus
 )
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
-from owl_data.waypoint_1.game_data.pipeline.utils import extract_and_sample
+from owl_data.waypoint_1.game_data.pipeline.tar_utils import extract_and_sample
 
 
 # --- Configuration ---

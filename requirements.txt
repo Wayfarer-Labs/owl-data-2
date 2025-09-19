@@ -1,6 +1,5 @@
 pandas
 multimethod
-decord
 tqdm
 torch
 torchcodec

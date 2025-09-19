@@ -142,12 +142,31 @@ class SequentialVideoClips(IterableDataset):
                         "start_ts": start_ts, "end_ts": end_ts,
                         "vid_path": path, "vid_name": os.path.basename(path),
                         "vid_dir": os.path.dirname(path), "idx_in_vid": idx_in_vid,
-                        "fps": fps, "fps_numer": fps_num, "fps_denom": fps_den
+                        "fps": fps, "fps_numer": fps_num, "fps_denom": fps_den,
+                        "valid_T": int(self.T)
                     }
                     yield {"frames": frames, "metadata": meta}
                     fill_i = 0
                     idx_in_vid += 1
                 i += 1
+            # emit a final (tail) clip if there are leftover frames; pad to T for VAE, but record valid_T< T
+            if fill_i > 0:
+                # repeat last available frame to pad the remainder
+                buf[fill_i:self.T] = buf[fill_i - 1]
+                end_frame = i - 1
+                start_frame = end_frame - (fill_i - 1)
+                start_ts = (start_frame / fps) if fps > 0 else None
+                end_ts = (end_frame / fps) if fps > 0 else None
+                frames = torch.from_numpy(buf.copy())
+                meta = {
+                    "start_frame": int(start_frame), "end_frame": int(end_frame),
+                    "start_ts": start_ts, "end_ts": end_ts,
+                    "vid_path": path, "vid_name": os.path.basename(path),
+                    "vid_dir": os.path.dirname(path), "idx_in_vid": idx_in_vid,
+                    "fps": fps, "fps_numer": fps_num, "fps_denom": fps_den,
+                    "valid_T": int(fill_i)  # only these are “real”
+                }
+                yield {"frames": frames, "metadata": meta}
             container.close()
 
 
@@ -252,6 +271,8 @@ def run_multinode_encode_and_save(
                 stem = f"{meta['idx_in_vid']:06d}"
 
                 lat_b = lat[b].detach().cpu().half()
+                vT = int(meta.get("valid_T", lat_b.shape[0]))
+                lat_b = lat_b[:vT]  # truncate tail clip on disk
                 assert torch.isfinite(lat_b).all(), "Encountered non-finite values in fp16 latents"
                 lat_path  = os.path.join(out_dir, f"{stem}_rgblatent.pt")
                 meta_path = os.path.join(out_dir, f"{stem}_meta.json")
@@ -259,7 +280,7 @@ def run_multinode_encode_and_save(
                 _save_lat_meta(lat_b, lat_path, meta, meta_path)
 
             if rank == 0:
-                pbar.update(B * T)
+                pbar.update(sum(int(m.get("valid_T", T)) for m in metas))
 
     # Drain async saves, then cleanup
     if rank == 0:
@@ -273,9 +294,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--src_root", required=True, help="Root directory containing source videos")
     ap.add_argument("--tgt_root", required=True, help="Root directory to mirror outputs into")
-    ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--batch_size", type=int, default=1)
     ap.add_argument("--num_workers", type=int, default=4)
-    ap.add_argument("--n_frames", type=int, default=120)
+    ap.add_argument("--n_frames", type=int, default=2048)
     ap.add_argument("--resize_to", type=int, nargs="+", default=[512])  # H W or single square
     ap.add_argument("--suffix", type=str, default=r"\.(?:mp4|MP4)$")
     ap.add_argument("--vae_cfg_path", type=str, required=True)

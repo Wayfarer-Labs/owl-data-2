@@ -11,10 +11,16 @@ from dotenv import load_dotenv
 
 # --- Setup ---
 load_dotenv()
+
+log_dir = '/mnt/data/sami/logs/'
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(levelname)s] - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(log_dir, 'tar_splitter.log'))
+    ]
 )
 
 # --- 1. Function to Peer into TAR Structure ---
@@ -97,7 +103,7 @@ def split_multi_video_tar(tar_bytes: bytes) -> dict[str, io.BytesIO]:
                         tarinfo = tarfile.TarInfo(name=os.path.basename(member.name))
                         tarinfo.size = len(file_content)
                         new_tar.addfile(tarinfo, io.BytesIO(file_content))
-                
+
                 new_tar_bytes_io.seek(0) # Rewind buffer to the beginning for reading
                 new_tars[new_tar_name] = new_tar_bytes_io
                 logging.info(f"Created new in-memory TAR '{new_tar_name}' for group '{base_name}'.")
@@ -198,7 +204,7 @@ if __name__ == '__main__':
     # This is an example of how you would use the functions above.
     
     # Prerequisite: You need a 'task_list.txt' from the create_task_list.py script.
-    MASTER_TASK_LIST = 'task_list.txt'
+    MASTER_TASK_LIST = '/home/sky/owl-data-2/task_list_min_to_20250909_211339.txt'
     MULTI_VIDEO_LIST_OUTPUT = 'multi_video_tars.txt'
     BUCKET = "game-data"
 
@@ -223,7 +229,7 @@ if __name__ == '__main__':
         
         # Set dry_run=True to see what would happen without making changes.
         # Set dry_run=False to execute the split, upload, and delete operations.
-        process_and_split_tars(BUCKET, keys_to_split, dry_run=True)
+        process_and_split_tars(BUCKET, keys_to_split, dry_run=False)
     else:
         logging.info(f"'{MULTI_VIDEO_LIST_OUTPUT}' not found.")
         logging.info("Run the 'find_multi_video_tars' function first to generate it.")

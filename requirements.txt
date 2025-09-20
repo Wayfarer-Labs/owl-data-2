@@ -2,7 +2,7 @@ pandas
 multimethod
 tqdm
 ffmpeg-python
-pyarrow
+fastparquet
 torch
 torchcodec
 torchvision

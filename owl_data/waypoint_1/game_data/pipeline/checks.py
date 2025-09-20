@@ -2,6 +2,8 @@ import logging
 
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 
+MENU_THRESHOLD = 0.1
+
 
 def check_darkness(data: ExtractedData, threshold: float = 15.0) -> bool:
     """Checks if the video is excessively dark."""
@@ -29,5 +31,5 @@ def check_for_menus(data: ExtractedData) -> float:
     """Estimates the percentage of time spent in a menu (placeholder)."""
     # This would eventually be a call to a VLM or a more complex model.
     # For now, it's a placeholder.
-    return 0.1 # Placeholder: 10% of the time is in menus
+    return MENU_THRESHOLD # Placeholder: 10% of the time is in menus
 

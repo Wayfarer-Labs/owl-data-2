@@ -1,7 +1,8 @@
 import os
 import queue
-import threading
 import logging
+import threading
+import traceback
 
 from dotenv import load_dotenv
 import boto3
@@ -11,30 +12,30 @@ from botocore.exceptions import ClientError
 from owl_data.waypoint_1.game_data.pipeline.checks import (
     check_darkness,
     check_dpi_scaling,
-    check_for_menus
+    check_for_menus,
+    MENU_THRESHOLD
 )
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.tar_utils import extract_and_sample
+from owl_data.waypoint_1.game_data.pipeline.manifest_utils import _create_manifest_record
 
 
 # --- Configuration ---
 # Load environment variables from .env file
 load_dotenv()
 
-
 # Constants for the pipeline
 MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
-MENU_THRESHOLD = 0.1
+
 # Using a placeholder type for boto3 client for cleaner annotations
 S3Client = type(boto3.client('s3'))
 
 def _run_all_quality_checks(data: ExtractedData) -> dict:
     """Runs all modular checks and returns a dictionary of flags."""
-    menu_percent = check_for_menus(data)
     flags = {
         "is_video_mostly_dark": check_darkness(data),
         "is_dpi_scale_issue": check_dpi_scaling(data),
-        "video_menu_percent": menu_percent,
+        "video_menu_percent": (menu_percent := check_for_menus(data)),
         "menu_flag_threshold": MENU_THRESHOLD,
         "is_video_mostly_menu": menu_percent > MENU_THRESHOLD,
     }
@@ -84,6 +85,7 @@ def downloader_task(
         finally:
             master_queue.task_done()
 
+
 def processor_task(
     buffer_queue: queue.Queue,
     output_path: str,
@@ -93,39 +95,61 @@ def processor_task(
     Consumer: Fetches data from buffer_queue, processes it, and writes
     results to the output Parquet file.
     """
+    # --- I/O Optimization: Batch Writing ---
+    # Writing one row at a time is inefficient. We'll batch results in memory
+    # and write them in chunks to reduce disk I/O and lock contention.
+    local_results_batch = []
+    BATCH_SIZE = 50 # Write to disk every 50 processed TARs
+
     while True:
         s3_key, tar_bytes = buffer_queue.get()
 
-        if s3_key is None:
+        if s3_key is None: # Shutdown signal
+            # Before shutting down, write any remaining records in the batch
+            if local_results_batch:
+                with file_lock:
+                    df = pd.DataFrame(local_results_batch)
+                    df.to_parquet(output_path, engine='fastparquet', append=True)
             logging.info("Shutdown signal received. Processor terminating.")
             buffer_queue.task_done()
             break
 
-        record = {"tar_url": s3_key, "processed_time": pd.Timestamp.now()}
+        # --- Processing Logic ---
+        extracted_data = None
+        quality_flags = None
+        error_obj = None
         
         try:
             logging.info(f"Processing '{s3_key}'...")
-            extracted_data: ExtractedData = extract_and_sample(tar_bytes, s3_key)
+            # This logic assumes you have one result per TAR now.
+            # If a TAR can have multiple videos, you'd loop here and create multiple records.
+            extracted_data = extract_and_sample(tar_bytes, s3_key)
             quality_flags = _run_all_quality_checks(extracted_data)
-            record.update(quality_flags)
-
             logging.info(f"Finished processing '{s3_key}'.")
 
         except Exception as e:
-            import traceback
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)
-            record["error"] = str(e)
-            record["error_traceback"] = traceback.format_exc()
+            error_obj = e
+        
+        # --- Record Creation and Batching ---
+        # ALWAYS call the standardized record builder
+        final_record = _create_manifest_record(s3_key, extracted_data, quality_flags, error_obj)
+        local_results_batch.append(final_record)
 
-        finally:
+        # Write the batch to disk when it's full
+        if len(local_results_batch) >= BATCH_SIZE:
             with file_lock:
                 try:
-                    df = pd.DataFrame([record])
-                    # You may want to write to separate files and merge later for performance
-                    df.to_parquet(output_path, engine='pyarrow', append=True)
+                    df = pd.DataFrame(local_results_batch)
+                    if not os.path.exists(output_path):
+                        df.to_parquet(output_path, engine='fastparquet', index=False)
+                    else:
+                        df.to_parquet(output_path, engine='fastparquet', append=True)
+                    local_results_batch = [] # Clear the batch
                 except Exception as e:
-                    logging.critical(f"FATAL: Could not write results for '{s3_key}' to {output_path}: {e}")
-            buffer_queue.task_done()
+                    logging.critical(f"FATAL: Could not write batch to {output_path}: {e}")
+
+        buffer_queue.task_done()
 
 
 def main_orchestrator(bucket: str, master_task_list: list[str], output_path: str):
@@ -216,7 +240,7 @@ def main_orchestrator(bucket: str, master_task_list: list[str], output_path: str
 if __name__ == '__main__':
     # This is an example of how you would run the orchestrator
     BUCKET_NAME = "game-data"
-    OUTPUT_PARQUET_PATH = "/mnt/data/sami/results/quality_manifest.parquet"
+    OUTPUT_PARQUET_PATH = "/mnt/data/sami/manifests/gamedata_quality_manifest.parquet"
     
     # In a real run, you would list objects from S3 here.
     # For this example, we'll use a small, dummy list.

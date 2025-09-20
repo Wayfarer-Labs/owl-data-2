@@ -12,9 +12,10 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedDat
             if member.name.endswith('.mp4'):
                 files['mp4'] = tar.extractfile(member).read()
                 files['video_name'] = member.name
-            elif member.name == 'metadata.json':
+            elif member.name.endswith('.json'):
                 files['json'] = tar.extractfile(member).read()
-            # Add other specific files like inputs.csv if needed
+            elif member.name.endswith('.csv'):
+                files['csv'] = tar.extractfile(member).read()
 
     if not ('mp4' in files and 'json' in files):
         raise Exception(f"Skipping single-video TAR '{s3_key}': missing mp4={'mp4' in files} or metadata.json={'json' in files}.")
@@ -43,7 +44,7 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedDat
             video_id=video_id,
             video_metadata=video_metadata,
             session_metadata=session_metadata,
-            sampled_frames=sampled_frames
+            sampled_frames=sampled_frames,
         )
     except Exception as e:
         logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
@@ -101,7 +102,7 @@ def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData:
         member_names = [m.name for m in tar.getmembers()]
         
         # --- Detection Logic ---
-        if 'metadata.json' in member_names:
+        if any(member_name.endswith('.json') for member_name in member_names):
             logging.info(f"Detected 'Single-Video' format for TAR '{s3_key}'.")
             return _process_single_video_tar(tar, s3_key)
         else:

@@ -4,9 +4,8 @@ from collections import defaultdict
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.mp4_utils import sample_frames_from_bytes
 
-def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[ExtractedData]:
+def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedData | None:
     """Processes a TAR file containing one video with descriptively named files."""
-    results = []
     files = {}
     for member in tar.getmembers():
         if member.isfile():
@@ -17,39 +16,38 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extract
                 files['json'] = tar.extractfile(member).read()
             # Add other specific files like inputs.csv if needed
 
-    if 'mp4' in files and 'json' in files:
-        try:
-            video_bytes = files['mp4']
-            # -- save a tmp mp4
-            tmp_dir = "/tmp"
-            tmp_mp4_path = os.path.join(tmp_dir, s3_key, os.path.basename(files['video_name']))
-            os.makedirs(os.path.dirname(tmp_mp4_path), exist_ok=True)
-            with open(tmp_mp4_path, 'wb') as f:
-                f.write(video_bytes)
+    if not ('mp4' in files and 'json' in files):
+        raise Exception(f"Skipping single-video TAR '{s3_key}': missing mp4={'mp4' in files} or metadata.json={'json' in files}.")
+    
+    try:
+        video_bytes = files['mp4']
+        # -- save a tmp mp4
+        tmp_dir = "/tmp"
+        tmp_mp4_path = os.path.join(tmp_dir, s3_key, os.path.basename(files['video_name']))
+        os.makedirs(os.path.dirname(tmp_mp4_path), exist_ok=True)
+        with open(tmp_mp4_path, 'wb') as f:
+            f.write(video_bytes)
 
-            video_id = os.path.splitext(os.path.basename(files['video_name']))[0]
-            session_metadata = json.loads(files['json'])
-            video_metadata = ffmpeg.probe(tmp_mp4_path)
-            
-            strides_spec = {3: 15, 30: 15, 60: 5}
-            sampled_frames = sample_frames_from_bytes(video_bytes, strides_spec)
-            
-            del video_bytes
-            gc.collect()
-
-            results.append(ExtractedData(
-                s3_key=s3_key,
-                video_id=video_id,
-                video_metadata=video_metadata,
-                session_metadata=session_metadata,
-                sampled_frames=sampled_frames
-            ))
-        except Exception as e:
-            logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
-    else:
-        logging.warning(f"Skipping single-video TAR '{s3_key}': missing mp4 or metadata.json.")
+        video_id = os.path.splitext(os.path.basename(files['video_name']))[0]
+        session_metadata = json.loads(files['json'])
+        video_metadata = ffmpeg.probe(tmp_mp4_path)
         
-    return results
+        strides_spec = {3: 15, 30: 15, 60: 5}
+        sampled_frames = sample_frames_from_bytes(video_bytes, strides_spec)
+        
+        del video_bytes
+        gc.collect()
+
+        return ExtractedData(
+            s3_key=s3_key,
+            video_id=video_id,
+            video_metadata=video_metadata,
+            session_metadata=session_metadata,
+            sampled_frames=sampled_frames
+        )
+    except Exception as e:
+        logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
+
 
 
 def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[ExtractedData]:
@@ -91,7 +89,7 @@ def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extracte
             
     return results
 
-def extract_and_sample(tar_bytes: bytes, s3_key: str) -> list[ExtractedData]:
+def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData | None:
     """
     Detects the TAR format and extracts data accordingly.
 
@@ -107,8 +105,8 @@ def extract_and_sample(tar_bytes: bytes, s3_key: str) -> list[ExtractedData]:
             logging.info(f"Detected 'Single-Video' format for TAR '{s3_key}'.")
             return _process_single_video_tar(tar, s3_key)
         else:
-            logging.info(f"Detected 'Multi-Video' format for TAR '{s3_key}' with members: {member_names} and {len(member_names)} members.")
-            return _process_multi_video_tar(tar, s3_key)
+            logging.error(f"Detected 'Multi-Video' format for TAR '{s3_key}' with members: {member_names} and {len(member_names)} members.")
+            assert 'metadata.json' in member_names, 'TAR does not conform to single-video format.'
 
 if __name__ == "__main__":
     import boto3

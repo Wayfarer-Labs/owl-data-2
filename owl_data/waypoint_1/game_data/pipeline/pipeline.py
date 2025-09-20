@@ -102,6 +102,7 @@ def processor_task(
             break
 
         record = {"tar_url": s3_key, "processed_time": pd.Timestamp.now()}
+        
         try:
             logging.info(f"Processing '{s3_key}'...")
             extracted_data: ExtractedData = extract_and_sample(tar_bytes, s3_key)
@@ -111,8 +112,10 @@ def processor_task(
             logging.info(f"Finished processing '{s3_key}'.")
 
         except Exception as e:
+            import traceback
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)
             record["error"] = str(e)
+            record["error_traceback"] = traceback.format_exc()
 
         finally:
             with file_lock:

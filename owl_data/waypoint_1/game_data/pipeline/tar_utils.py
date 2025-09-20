@@ -4,7 +4,7 @@ from collections import defaultdict
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.mp4_utils import sample_frames_from_bytes
 
-def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedData | None:
+def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedData:
     """Processes a TAR file containing one video with descriptively named files."""
     files = {}
     for member in tar.getmembers():
@@ -47,7 +47,7 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedDat
         )
     except Exception as e:
         logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
-
+        raise e
 
 
 def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[ExtractedData]:
@@ -89,7 +89,7 @@ def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extracte
             
     return results
 
-def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData | None:
+def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData:
     """
     Detects the TAR format and extracts data accordingly.
 
@@ -106,7 +106,7 @@ def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData | None:
             return _process_single_video_tar(tar, s3_key)
         else:
             logging.error(f"Detected 'Multi-Video' format for TAR '{s3_key}' with members: {member_names} and {len(member_names)} members.")
-            assert 'metadata.json' in member_names, 'TAR does not conform to single-video format.'
+            raise Exception(f"TAR does not conform to single-video format. {member_names}")
 
 if __name__ == "__main__":
     import boto3
@@ -131,5 +131,4 @@ if __name__ == "__main__":
         logging.info(f"Processing TAR '{s3_key}'")
         response = s3_client.get_object(Bucket='game-data', Key=s3_key)
         tar_bytes = response['Body'].read()
-        results = extract_and_sample(tar_bytes, s3_key)
-        logging.info(f"Results for {s3_key}: {len(results)}")
+        result = extract_and_sample(tar_bytes, s3_key)

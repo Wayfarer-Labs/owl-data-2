@@ -209,7 +209,7 @@ def main_orchestrator(bucket: str, master_task_list: list[str], output_path: str
     # --- 5. Cleanly Join Threads ---
     for thread in threads:
         thread.join()
-        
+
     logging.info("Pipeline finished successfully.")
 
 
@@ -224,19 +224,20 @@ if __name__ == '__main__':
     # response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix="some/folder/")
     # all_tar_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.tar')]
     
-    dummy_task_list = [
-        "tars/vid1.tar",
-        "tars/vid2.tar",
-        "tars/large_file.tar", # Will be skipped by size check
-        "tars/non_existent.tar", # Will be skipped by S3 error
-        "tars/vid3.tar",
-    ]
-    
+    # dummy_task_list = [
+    #     "tars/vid1.tar",
+    #     "tars/vid2.tar",
+    #     "tars/large_file.tar", # Will be skipped by size check
+    #     "tars/non_existent.tar", # Will be skipped by S3 error
+    #     "tars/vid3.tar",
+    # ]
+    task_list = "task_list.txt"
+    tasks = [line.strip() for line in open(task_list, 'r').readlines() if line.strip()]
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(OUTPUT_PARQUET_PATH), exist_ok=True)
     
     main_orchestrator(
         bucket=BUCKET_NAME,
-        master_task_list=dummy_task_list,
+        master_task_list=tasks,
         output_path=OUTPUT_PARQUET_PATH
     )

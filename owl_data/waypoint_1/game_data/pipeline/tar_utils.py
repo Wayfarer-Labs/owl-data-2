@@ -1,11 +1,5 @@
-import os
-import tarfile
-import json
-import gc
-import av
-import io
+import os, gc, io, json, tarfile, logging, ffmpeg, boto3, traceback
 from collections import defaultdict
-import logging
 
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.mp4_utils import sample_frames_from_bytes
@@ -26,9 +20,16 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extract
     if 'mp4' in files and 'json' in files:
         try:
             video_bytes = files['mp4']
+            # -- save a tmp mp4
+            tmp_dir = "/tmp"
+            tmp_mp4_path = os.path.join(tmp_dir, s3_key, os.path.basename(files['video_name']))
+            os.makedirs(os.path.dirname(tmp_mp4_path), exist_ok=True)
+            with open(tmp_mp4_path, 'wb') as f:
+                f.write(video_bytes)
+
             video_id = os.path.splitext(os.path.basename(files['video_name']))[0]
             session_metadata = json.loads(files['json'])
-            video_metadata = av.probe(io.BytesIO(video_bytes))
+            video_metadata = ffmpeg.probe(tmp_mp4_path)
             
             strides_spec = {3: 15, 30: 15, 60: 5}
             sampled_frames = sample_frames_from_bytes(video_bytes, strides_spec)
@@ -44,7 +45,7 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extract
                 sampled_frames=sampled_frames
             ))
         except Exception as e:
-            logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e}")
+            logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
     else:
         logging.warning(f"Skipping single-video TAR '{s3_key}': missing mp4 or metadata.json.")
         
@@ -68,7 +69,7 @@ def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extracte
             try:
                 video_bytes = files['mp4']
                 session_metadata = json.loads(files['json'])
-                video_metadata = av.probe(io.BytesIO(video_bytes))
+                video_metadata = ffmpeg.probe(io.BytesIO(video_bytes))
                 
                 strides_spec = {3: 15, 30: 15, 60: 5}
                 sampled_frames = sample_frames_from_bytes(video_bytes, strides_spec)
@@ -84,7 +85,7 @@ def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[Extracte
                     sampled_frames=sampled_frames
                 ))
             except Exception as e:
-                logging.error(f"Failed to process group '{video_id}' in TAR '{s3_key}'. Error: {e}")
+                logging.error(f"Failed to process group '{video_id}' in TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
         else:
             logging.warning(f"Skipping group '{video_id}' in TAR '{s3_key}': missing mp4 or json file.")
             
@@ -106,44 +107,31 @@ def extract_and_sample(tar_bytes: bytes, s3_key: str) -> list[ExtractedData]:
             logging.info(f"Detected 'Single-Video' format for TAR '{s3_key}'.")
             return _process_single_video_tar(tar, s3_key)
         else:
-            logging.info(f"Detected 'Multi-Video' format for TAR '{s3_key}'.")
+            logging.info(f"Detected 'Multi-Video' format for TAR '{s3_key}' with members: {member_names} and {len(member_names)} members.")
             return _process_multi_video_tar(tar, s3_key)
 
-
-def main():
-    import sys
-    video_path = "/home/sky/owl-data-2/owl_data/waypoint_1/game_data/tars_by_size/205_500MB/4e3e5cbc95e64420/000000.mp4"
-
-    try:
-        logging.info(f"Reading video file from: {video_path}")
-        with open(video_path, 'rb') as f:
-            video_bytes = f.read()
-    except FileNotFoundError:
-        logging.error(f"Error: The file was not found at '{video_path}'")
-        logging.error("Please update the 'video_path' variable in this script.")
-        sys.exit(1)
-
-    # --- Define the desired strides and frame counts here ---
-    # Key = stride in seconds, Value = number of frames to sample
-    strides_to_sample = {
-        3: 15,  # Sample 15 frames, 3 seconds apart
-        30: 15, # Sample 15 frames, 30 seconds apart
-        60: 5   # Sample 5 frames, 60 seconds apart
-    }
-
-    # Run the frame sampling function with the new specification
-    sampled_frames = sample_frames_from_bytes(video_bytes, strides_to_sample)
-
-    # Print the results to verify
-    print("\n--- Frame Sampling Results ---")
-    for name, array in sampled_frames.items():
-        if array.size > 0:
-            # Shape is (num_frames, channels, height, width)
-            print(f"'{name}': Found {array.shape[0]} frames with shape {array.shape}")
-        else:
-            print(f"'{name}': No frames were sampled (video might be too short for this stride).")
-    print("----------------------------")
-
-
 if __name__ == "__main__":
-    main()
+    import boto3
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    task_list = "task_list.txt"
+    num_samples = 10
+    with open(task_list, 'r') as f:
+        s3_keys = [line.strip() for line in f if line.strip()]
+    s3_keys = s3_keys[:num_samples]
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+        endpoint_url=os.getenv('AWS_ENDPOINT_URL_S3'),
+        region_name=os.getenv('AWS_REGION')
+    )
+
+    for s3_key in s3_keys:
+        logging.info(f"Processing TAR '{s3_key}'")
+        response = s3_client.get_object(Bucket='game-data', Key=s3_key)
+        tar_bytes = response['Body'].read()
+        results = extract_and_sample(tar_bytes, s3_key)
+        logging.info(f"Results for {s3_key}: {len(results)}")

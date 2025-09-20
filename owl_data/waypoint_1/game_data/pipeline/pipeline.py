@@ -17,7 +17,7 @@ from owl_data.waypoint_1.game_data.pipeline.checks import (
 )
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.tar_utils import extract_and_sample
-from owl_data.waypoint_1.game_data.pipeline.manifest_utils import _create_manifest_record
+from owl_data.waypoint_1.game_data.pipeline.manifest_utils import create_manifest_record
 
 
 # --- Configuration ---
@@ -92,64 +92,76 @@ def processor_task(
     file_lock: threading.Lock
 ):
     """
-    Consumer: Fetches data from buffer_queue, processes it, and writes
-    results to the output Parquet file.
+    Consumer: Fetches data from buffer_queue, processes a single video from each TAR,
+    and writes results to the output Parquet file.
     """
-    # --- I/O Optimization: Batch Writing ---
-    # Writing one row at a time is inefficient. We'll batch results in memory
-    # and write them in chunks to reduce disk I/O and lock contention.
     local_results_batch = []
-    BATCH_SIZE = 50 # Write to disk every 50 processed TARs
+    BATCH_SIZE = 50
 
     while True:
         s3_key, tar_bytes = buffer_queue.get()
 
         if s3_key is None: # Shutdown signal
-            # Before shutting down, write any remaining records in the batch
             if local_results_batch:
+                # Write any remaining records before shutting down
                 with file_lock:
-                    df = pd.DataFrame(local_results_batch)
-                    df.to_parquet(output_path, engine='fastparquet', append=True)
+                    try:
+                        df = pd.DataFrame(local_results_batch)
+                        df.to_parquet(output_path, engine='fastparquet', append=True)
+                    except Exception as e:
+                        logging.critical(f"FATAL: Final batch write failed: {e}")
             logging.info("Shutdown signal received. Processor terminating.")
             buffer_queue.task_done()
             break
 
-        # --- Processing Logic ---
-        extracted_data = None
-        quality_flags = None
-        error_obj = None
-        
+        final_record = None
         try:
+            # --- Success Path ---
             logging.info(f"Processing '{s3_key}'...")
-            # This logic assumes you have one result per TAR now.
-            # If a TAR can have multiple videos, you'd loop here and create multiple records.
+            
+            # extract_and_sample now correctly returns a single ExtractedData object
             extracted_data = extract_and_sample(tar_bytes, s3_key)
+
+            # Defensive check in case the function can return None on non-fatal errors
+            if not extracted_data:
+                 raise ValueError("extract_and_sample did not return valid data.")
+
             quality_flags = _run_all_quality_checks(extracted_data)
+            
+            # Create the success record.
+            final_record = create_manifest_record(
+                s3_key=s3_key, 
+                extracted_data=extracted_data, 
+                quality_flags=quality_flags
+            )
             logging.info(f"Finished processing '{s3_key}'.")
 
         except Exception as e:
+            # --- Failure Path ---
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)
-            error_obj = e
-        
-        # --- Record Creation and Batching ---
-        # ALWAYS call the standardized record builder
-        final_record = _create_manifest_record(s3_key, extracted_data, quality_flags, error_obj)
-        local_results_batch.append(final_record)
+            # Create the failure record.
+            final_record = create_manifest_record(s3_key=s3_key, error=e)
 
-        # Write the batch to disk when it's full
-        if len(local_results_batch) >= BATCH_SIZE:
-            with file_lock:
-                try:
-                    df = pd.DataFrame(local_results_batch)
-                    if not os.path.exists(output_path):
-                        df.to_parquet(output_path, engine='fastparquet', index=False)
-                    else:
-                        df.to_parquet(output_path, engine='fastparquet', append=True)
-                    local_results_batch = [] # Clear the batch
-                except Exception as e:
-                    logging.critical(f"FATAL: Could not write batch to {output_path}: {e}")
+        finally:
+            # --- Batching and Cleanup ---
+            if final_record:
+                local_results_batch.append(final_record)
 
-        buffer_queue.task_done()
+            if len(local_results_batch) >= BATCH_SIZE:
+                logging.info(f"Writing batch of {len(local_results_batch)} records to {output_path}...")
+                with file_lock:
+                    try:
+                        df = pd.DataFrame(local_results_batch)
+                        # The first write needs to create the file, subsequent ones append
+                        if not os.path.exists(output_path):
+                            df.to_parquet(output_path, engine='fastparquet', index=False)
+                        else:
+                            df.to_parquet(output_path, engine='fastparquet', append=True)
+                        local_results_batch = [] # Clear the batch after writing
+                    except Exception as e:
+                        logging.critical(f"FATAL: Could not write batch to {output_path}: {e}")
+
+            buffer_queue.task_done()
 
 
 def main_orchestrator(bucket: str, master_task_list: list[str], output_path: str):

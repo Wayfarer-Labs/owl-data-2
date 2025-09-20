@@ -1,11 +1,22 @@
 import json
 import traceback
 import pandas as pd
+from functools import cache
 
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.checks import MENU_THRESHOLD
 
-def _create_manifest_record(s3_key: str, extracted_data: ExtractedData, quality_flags: dict, error: Exception = None) -> dict:
+@cache
+def get_commit_hash() -> str:
+    import subprocess
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+
+def create_manifest_record(
+    s3_key: str, 
+    extracted_data: ExtractedData = None, 
+    quality_flags: dict = None,
+    error: Exception = None
+) -> dict:
     """
     Creates a standardized record for the manifest, ensuring all columns are present.
 
@@ -36,11 +47,12 @@ def _create_manifest_record(s3_key: str, extracted_data: ExtractedData, quality_
         'is_video_mostly_menu': None,
         'error': None,
         'error_traceback': None,
-        'processed_time': pd.Timestamp.now()
+        'processed_time': pd.Timestamp.now(),
+        'commit_hash': get_commit_hash()
     }
 
     # 2. If processing was successful, populate the data fields
-    if error is None:
+    if error is None and extracted_data and quality_flags:
         # NOTE: This assumes `extract_and_sample` now returns a single object again,
         # since you enforced the "1 video per TAR" rule.
         # If it still returns a list, you'd call this function inside a loop.

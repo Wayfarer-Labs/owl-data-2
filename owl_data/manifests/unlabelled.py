@@ -6,7 +6,7 @@ from tqdm import tqdm
 def construct_unlabelled_manifest(input_dir, output_dir, csv_path):
     """
     Scans input_dir for .mp4 files, maps them to output_dir with leading hyphens replaced by underscores,
-    and writes a manifest CSV at csv_path with video info from vid_info.json if available.
+    and writes a manifest CSV at csv_path with video info from {vid_dir}.json if available.
     """
     mp4_paths = []
     output_dir_paths = []
@@ -46,6 +46,8 @@ def construct_unlabelled_manifest(input_dir, output_dir, csv_path):
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for vid_dir in tqdm(output_dir_paths, desc="Reading vid info jsons"):
+            base_name = os.path.basename(vid_dir)
+            #info_path = os.path.join(vid_dir, f"{base_name}.json")
             info_path = os.path.join(vid_dir, "vid_info.json")
             vid_duration = ""
             vid_fps = ""
@@ -56,7 +58,14 @@ def construct_unlabelled_manifest(input_dir, output_dir, csv_path):
                         vid_duration = info.get("duration", "")
                         vid_fps = info.get("fps", "")
                 except Exception:
-                    pass
+                    continue  # skip if error reading json
+            else:
+                continue  # skip if no info json
+
+            # Only write if both duration and fps are present and not empty
+            if vid_duration == "" or vid_fps == "":
+                continue
+
             writer.writerow({
                 "vid_dir_path": vid_dir,
                 "vid_duration": vid_duration,

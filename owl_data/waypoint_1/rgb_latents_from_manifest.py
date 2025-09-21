@@ -7,40 +7,44 @@ import torch.nn.functional as F
 from ..nn.owl_image_vae import BatchedEncodingPipe
 import pandas as pd
 import random
+import math
+import numpy as np
 
-def find_tensor_paths(csv_path, chunk_size=2000):
+def find_tensor_paths(csv_path, force_overwrite=False):
     """
     For each row in the manifest, generate all *_rgb.pt and *_rgblatent.pt output paths
     for each chunk (ceil(vid_duration * vid_fps)), assuming all exist.
     Shuffle and return the lists.
     """
-    import math
+    print("Reading manifest...")
+    df = pd.read_csv(csv_path, usecols=["vid_dir_path",
+                                        "vid_duration",
+                                        "vid_fps"])         # read only what you need
 
-    df = pd.read_csv(csv_path)
-    input_rgb_paths = []
-    output_latent_paths = []
+    chunks = np.ceil(df["vid_duration"].to_numpy()
+                     * df["vid_fps"].to_numpy()).astype(np.uint16)
 
-    for idx, row in df.iterrows():
-        vid_dir = row["vid_dir_path"]
-        try:
-            duration = float(row["vid_duration"])
-            fps = float(row["vid_fps"])
-        except Exception:
-            continue  # skip rows with missing or invalid duration/fps
+    dirs   = df["vid_dir_path"].to_numpy()
 
-        num_chunks = int(math.ceil(duration * fps))
-        for i in range(num_chunks):
-            fname = f"{i:08d}_rgb.pt"
-            rgb_path = os.path.join(vid_dir, fname)
-            latent_path = os.path.join(vid_dir, f"{i:08d}_rgblatent.pt")
-            input_rgb_paths.append(rgb_path)
-            output_latent_paths.append(latent_path)
+    return dirs, chunks
 
-    print(f"Found {len(input_rgb_paths)} rgb chunk paths from manifest.")
-    combined = list(zip(input_rgb_paths, output_latent_paths))
-    random.shuffle(combined)
-    input_rgb_paths, output_latent_paths = zip(*combined) if combined else ([], [])
-    return list(input_rgb_paths), list(output_latent_paths)
+    n_tot  = int(chunks.sum())
+
+    # 1. repeat directory names
+    dir_rep   = np.repeat(dirs, chunks)
+
+    # 2. 0…n-1 sequence for each video
+    chunk_ids = np.concatenate([np.arange(n, dtype=np.uint16) for n in chunks])
+
+    # 3. zero-padded byte strings
+    chunk_str = np.char.zfill(chunk_ids.astype("U"), 8)
+    
+    print("Constructing paths from manifest... (this might take a few minutes)")
+    # 4. build final paths (still NumPy, very fast)
+    rgb_paths    = dir_rep + "/splits/" + chunk_str + "_rgb.pt"
+    latent_paths = dir_rep + "/splits/" + chunk_str + "_rgblatent.pt"
+    
+    return rgb_paths, latent_paths
 
 def compile_preprocess():
     @torch.compile
@@ -64,43 +68,50 @@ class LatentWorker:
         self.preprocess = compile_preprocess()
         self.force_overwrite = force_overwrite
 
-    def run(self, rgb_path, latent_path):
+    def run(self, vid_dir_path, n_chunks):
+        # Construct rgb and latent paths given the vid_dir_path and n_chunks
+        for i in range(n_chunks):
+            rgb_path = vid_dir_path + "/splits/" + str(i).zfill(8) + "_rgb.pt"
+            latent_path = vid_dir_path + "/splits/" + str(i).zfill(8) + "_rgblatent.pt"
+
+            self._run(rgb_path, latent_path)
+
+    def _run(self, rgb_path, latent_path):
         if not self.force_overwrite and os.path.exists(latent_path):
             return
-        rgb = torch.load(rgb_path, map_location='cuda')  # [b,3,360,640] uint8
+        if not os.path.exists(rgb_path):
+            return
+        rgb = torch.load(rgb_path, map_location='cuda', weights_only=False)  # [b,3,360,640] uint8
         x = self.preprocess(rgb)  # [b,3,360,640] float16, normalized to [-1,1]
         with torch.no_grad():
             latent = self.pipe(x)  # [b,128,8,8]
-        torch.save(latent, latent_path)
-
-def split_list(lst, n):
-    # Splits lst into n nearly equal parts
-    k, m = divmod(len(lst), n)
-    return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n)]
+        torch.save(latent, latent_path, _use_new_zipfile_serialization=False)
 
 def main():
     parser = argparse.ArgumentParser(description="Compute rgblatents for all *_rgb.pt tensors in a directory using multiple GPUs")
     parser.add_argument("--manifest_path", type=str, required=True, help="Path to manifest CSV")
     parser.add_argument("--vae_cfg_path", type=str, required=True, help="Path to VAE config file")
     parser.add_argument("--vae_ckpt_path", type=str, required=True, help="Path to VAE checkpoint file")
-    parser.add_argument("--vae_batch_size", type=int, default=128, help="Batch size for VAE encoding (default: 128)")
+    parser.add_argument("--vae_batch_size", type=int, default=500, help="Batch size for VAE encoding (default: 128)")
     parser.add_argument("--num_gpus", type=int, default=8, help="Number of GPUs to use (default: 8)")
     parser.add_argument("--force_overwrite", action="store_true", help="Overwrite existing depth latent tensors")
     parser.add_argument("--node_rank", type=int, default=0, help="Rank of this node (0-indexed)")
     parser.add_argument("--num_nodes", type=int, default=1, help="Total number of nodes")
     args = parser.parse_args()
 
-    rgb_paths, latent_paths = find_tensor_paths(args.manifest_path, args.force_overwrite)
+    dirs, chunks = find_tensor_paths(args.manifest_path, args.force_overwrite)
+
+    print(f"Found {len(dirs)} directories in manifest.")
 
     # Shard work across nodes
-    total_files = len(rgb_paths)
+    total_files = len(dirs)
     files_per_node = (total_files + args.num_nodes - 1) // args.num_nodes
     start_idx = args.node_rank * files_per_node
     end_idx = min((args.node_rank + 1) * files_per_node, total_files)
-    rgb_paths = rgb_paths[start_idx:end_idx]
-    latent_paths = latent_paths[start_idx:end_idx]
+    dirs = dirs[start_idx:end_idx]
+    chunks = chunks[start_idx:end_idx]
 
-    if not rgb_paths:
+    if len(dirs) == 0:
         print(f"Node {args.node_rank}: No files assigned to this node after sharding.")
         return
 
@@ -117,9 +128,9 @@ def main():
     ]
 
     result_refs = []
-    for idx, (rgb_path, latent_path) in enumerate(zip(rgb_paths, latent_paths)):
+    for idx, (dir_path, chunk) in enumerate(zip(dirs, chunks)):
         worker = workers[idx % num_gpus]          # simple round-robin
-        ref = worker.run.remote(rgb_path, latent_path)
+        ref = worker.run.remote(dir_path, chunk)
         result_refs.append(ref)
 
     with tqdm(total=len(result_refs), desc=f"Extracting rgblatents (node {args.node_rank})", unit="video") as pbar:

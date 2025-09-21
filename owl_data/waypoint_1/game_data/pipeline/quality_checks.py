@@ -2,7 +2,7 @@
 Quality check functions for game data pipeline.
 """
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 
 
 def _run_all_quality_checks(data: ExtractedData) -> dict:

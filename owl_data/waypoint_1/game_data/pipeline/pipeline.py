@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 
 from owl_data.waypoint_1.game_data.pipeline.downloader import downloader_task
 from owl_data.waypoint_1.game_data.pipeline.processor import processor_task
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 
 
 load_dotenv()

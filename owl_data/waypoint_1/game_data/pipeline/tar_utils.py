@@ -1,7 +1,7 @@
 import os, gc, io, json, tarfile, logging, ffmpeg, boto3, traceback
 from collections import defaultdict
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.mp4_utils import sample_frames_from_bytes
 
 def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedData:

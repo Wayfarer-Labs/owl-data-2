@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 
 
 def serialize_extracted_data(data: ExtractedData) -> dict:

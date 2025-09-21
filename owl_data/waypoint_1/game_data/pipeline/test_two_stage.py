@@ -15,7 +15,7 @@ import logging
 import numpy as np
 from unittest.mock import Mock
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.pt_utils import (
     serialize_extracted_data, 
     deserialize_extracted_data,

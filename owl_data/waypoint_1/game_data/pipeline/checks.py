@@ -1,6 +1,6 @@
 import logging
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 
 MENU_THRESHOLD = 0.1
 

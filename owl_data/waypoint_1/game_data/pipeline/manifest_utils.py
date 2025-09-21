@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.checks import MENU_THRESHOLD
 
 @cache

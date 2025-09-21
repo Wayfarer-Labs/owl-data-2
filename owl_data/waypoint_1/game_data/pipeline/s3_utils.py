@@ -6,7 +6,7 @@ import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
-from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
+from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.pt_utils import (
     save_extracted_data_to_pt, 
     load_extracted_data_from_pt,

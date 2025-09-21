@@ -2,6 +2,9 @@ import json
 import traceback
 import pandas as pd
 from functools import cache
+import logging
+import os
+import threading
 
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.checks import MENU_THRESHOLD
@@ -68,3 +71,38 @@ def create_manifest_record(
         record['error_traceback'] = traceback.format_exc()
 
     return record
+
+
+class ParquetBatchWriter:
+    """A helper class to manage the batching and writing of records to a Parquet file."""
+    def __init__(self, output_path: str, file_lock: threading.Lock, batch_size: int = 50):
+        self.output_path = output_path
+        self.lock = file_lock
+        self.batch_size = batch_size
+        self.batch = []
+
+    def add(self, record: dict):
+        """Adds a record to the batch and writes the batch to disk if it's full."""
+        self.batch.append(record)
+        if len(self.batch) >= self.batch_size:
+            self._write_batch()
+
+    def flush(self):
+        """Writes any remaining records in the batch to disk."""
+        if self.batch:
+            self._write_batch()
+
+    def _write_batch(self):
+        """The actual file-writing logic."""
+        logging.info(f"Writing batch of {len(self.batch)} records to {self.output_path}...")
+        with self.lock:
+            try:
+                df = pd.DataFrame(self.batch)
+                if not os.path.exists(self.output_path):
+                    df.to_parquet(self.output_path, engine='fastparquet', index=False)
+                else:
+                    df.to_parquet(self.output_path, engine='fastparquet', append=True)
+                self.batch = [] # Clear the batch after a successful write
+            except Exception as e:
+                logging.critical(f"FATAL: Could not write batch to {self.output_path}: {e}")
+                # Optional: Decide how to handle failed writes, e.g., save to a recovery file.

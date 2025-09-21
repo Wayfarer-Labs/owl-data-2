@@ -11,7 +11,7 @@ def check_darkness(data: ExtractedData, threshold: float = 15.0) -> bool:
     frames = data.sampled_frames["stride-30_chw"]
     avg_brightness = frames.mean()
     logging.info(f"'{data.s3_key}' brightness check: {avg_brightness:.2f}")
-    return avg_brightness < threshold
+    return bool(avg_brightness < threshold)
 
 def check_dpi_scaling(data: ExtractedData, border_ratio: float = 0.1) -> bool:
     """Checks for large black borders indicating a DPI scaling issue."""
@@ -25,7 +25,7 @@ def check_dpi_scaling(data: ExtractedData, border_ratio: float = 0.1) -> bool:
 
     is_letterboxed = top_border.mean() < 10.0 and bottom_border.mean() < 10.0
     # A more robust check would also look at left/right borders.
-    return is_letterboxed
+    return bool(is_letterboxed)
 
 def check_for_menus(data: ExtractedData) -> float:
     """Estimates the percentage of time spent in a menu (placeholder)."""

@@ -11,10 +11,11 @@ from botocore.exceptions import ClientError
 
 from owl_data.waypoint_1.game_data.pipeline.downloader import downloader_task
 from owl_data.waypoint_1.game_data.pipeline.processor import processor_task
+from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 
 
 load_dotenv()
-MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+from owl_data.waypoint_1.game_data.pipeline.constants import MAX_FILE_SIZE_BYTES
 
 
 def main_orchestrator(bucket: str, master_task_list: list[str], output_path: str):
@@ -100,6 +101,9 @@ def main_orchestrator(bucket: str, master_task_list: list[str], output_path: str
         thread.join()
 
     logging.info("Pipeline finished successfully.")
+
+
+# Quality checks function moved to quality_checks.py to avoid circular imports
 
 
 if __name__ == '__main__':

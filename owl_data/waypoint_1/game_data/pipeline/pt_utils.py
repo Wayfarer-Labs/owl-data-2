@@ -101,7 +101,7 @@ def convert_s3_key_to_pt_key(s3_key: str, bucket_suffix: str = "-manifest") -> s
         
     Returns:
         Converted S3 key (e.g., "path/to/file.pt")
-    """
+    """ 
     if s3_key.endswith('.tar'):
         return s3_key[:-4] + '.pt'
     else:

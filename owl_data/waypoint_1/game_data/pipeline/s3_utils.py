@@ -4,6 +4,7 @@ import tempfile
 from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
 
 from owl_data.waypoint_1.game_data.pipeline.types import ExtractedData
 from owl_data.waypoint_1.game_data.pipeline.pt_utils import (
@@ -11,6 +12,8 @@ from owl_data.waypoint_1.game_data.pipeline.pt_utils import (
     load_extracted_data_from_pt,
     convert_s3_key_to_pt_key
 )
+
+load_dotenv()
 
 
 def upload_extracted_data_to_s3(
@@ -27,7 +30,7 @@ def upload_extracted_data_to_s3(
         s3_client: Boto3 S3 client
         manifest_bucket: Name of the manifest bucket
         original_s3_key: Original S3 key from the TAR file
-        
+
     Returns:
         S3 key where the .pt file was uploaded
     """
@@ -47,7 +50,7 @@ def upload_extracted_data_to_s3(
                     Body=pt_file.read(),
                     ContentType='application/octet-stream'
                 )
-                
+
         logging.info(f"Uploaded ExtractedData to s3://{manifest_bucket}/{pt_s3_key}")
         return pt_s3_key
         

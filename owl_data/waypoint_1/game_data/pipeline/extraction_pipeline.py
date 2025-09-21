@@ -165,7 +165,6 @@ def run_extraction_pipeline(
     # --- 3. Set up queues and threads ---
     master_queue: queue.Queue = queue.Queue()
     buffer_queue: queue.Queue = queue.Queue(maxsize=BUFFER_QUEUE_SIZE)
-    file_lock = threading.Lock()
 
     # Fill the master queue with tasks
     for task in tasks_to_process:
@@ -238,5 +237,5 @@ if __name__ == '__main__':
         source_bucket=SOURCE_BUCKET,
         manifest_bucket=MANIFEST_BUCKET,
         master_task_list=tasks,
-        skip_existing=True
+        skip_existing=False
     ) 

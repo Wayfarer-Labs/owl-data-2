@@ -13,11 +13,7 @@ from owl_data.waypoint_1.game_data.pipeline.downloader import downloader_task
 from owl_data.waypoint_1.game_data.pipeline.processor import processor_task
 
 
-# --- Configuration ---
-# Load environment variables from .env file
 load_dotenv()
-
-# Constants for the pipeline
 MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 
 

@@ -1,11 +1,11 @@
 import logging
 import queue
+
 import boto3
 from botocore.exceptions import ClientError
 
 S3Client = type(boto3.client('s3'))
-
-from owl_data.waypoint_1.game_data.pipeline.constants import MAX_FILE_SIZE_BYTES
+from owl_data.waypoint_1.game_data.constants import MAX_FILE_SIZE_BYTES
 
 
 def downloader_task(

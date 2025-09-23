@@ -20,10 +20,11 @@ from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
 
-from owl_data.waypoint_1.game_data.pipeline.s3_utils import download_extracted_data_from_s3, list_pt_files_in_bucket
-from owl_data.waypoint_1.game_data.pipeline.manifest_utils import create_manifest_record, ParquetBatchWriter
-from owl_data.waypoint_1.game_data.pipeline.quality_checks import _run_all_quality_checks
-from owl_data.waypoint_1.game_data.pipeline.downloader import S3Client
+from owl_data.waypoint_1.game_data.utils.s3_utils import download_extracted_data_from_s3, list_pt_files_in_bucket
+from owl_data.waypoint_1.game_data.utils.manifest_utils import create_manifest_record, ParquetBatchWriter
+from owl_data.waypoint_1.game_data.quality_checks.quality_checks import _run_all_quality_checks
+
+S3Client = type(boto3.client('s3'))
 
 load_dotenv()
 

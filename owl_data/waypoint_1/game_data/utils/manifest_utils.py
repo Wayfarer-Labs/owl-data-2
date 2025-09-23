@@ -6,8 +6,8 @@ import logging
 import os
 import threading
 
-from owl_data.waypoint_1.game_data.pipeline.owl_types import ExtractedData
-from owl_data.waypoint_1.game_data.pipeline.checks import MENU_THRESHOLD
+from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.constants import MENU_THRESHOLD
 
 @cache
 def get_commit_hash() -> str:

@@ -16,8 +16,8 @@ import logging
 import os
 from typing import List
 
-from owl_data.waypoint_1.game_data.pipeline.extraction_pipeline import run_extraction_pipeline
-from owl_data.waypoint_1.game_data.pipeline.manifest_pipeline import run_manifest_pipeline
+from owl_data.waypoint_1.game_data.pipeline.tar_to_pt_pipeline import run_extraction_pipeline
+from owl_data.waypoint_1.game_data.pipeline.pt_to_manifest_pipeline import run_manifest_pipeline
 
 
 def setup_logging(log_level: str = "INFO"):

@@ -2,9 +2,9 @@ import logging
 import threading
 import queue
 
-from owl_data.waypoint_1.game_data.pipeline.tar_utils import extract_and_sample
-from owl_data.waypoint_1.game_data.pipeline.manifest_utils import create_manifest_record, ParquetBatchWriter
-from owl_data.waypoint_1.game_data.pipeline.quality_checks import _run_all_quality_checks
+from owl_data.waypoint_1.game_data.utils.tar_utils import extract_and_sample
+from owl_data.waypoint_1.game_data.utils.manifest_utils import create_manifest_record, ParquetBatchWriter
+from owl_data.waypoint_1.game_data.quality_checks.quality_checks import _run_all_quality_checks
 
 
 def _process_single_tar(s3_key: str, tar_bytes: bytes) -> dict:

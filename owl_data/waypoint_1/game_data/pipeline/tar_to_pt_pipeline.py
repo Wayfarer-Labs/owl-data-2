@@ -14,19 +14,20 @@ import os
 import queue
 import logging
 import threading
-import traceback
 from typing import List
 
 from dotenv import load_dotenv
+
 import boto3
 from botocore.exceptions import ClientError
 
-from owl_data.waypoint_1.game_data.pipeline.tar_utils import extract_and_sample
-from owl_data.waypoint_1.game_data.pipeline.s3_utils import upload_extracted_data_to_s3, get_missing_pt_files
-from owl_data.waypoint_1.game_data.pipeline.downloader import S3Client
+from owl_data.waypoint_1.game_data.utils.tar_utils import extract_and_sample
+from owl_data.waypoint_1.game_data.utils.s3_utils import upload_extracted_data_to_s3, get_missing_pt_files
+
+S3Client = type(boto3.client('s3'))
 
 load_dotenv()
-from owl_data.waypoint_1.game_data.pipeline.constants import MAX_FILE_SIZE_BYTES
+from owl_data.waypoint_1.game_data.constants import MAX_FILE_SIZE_BYTES
 
 
 def extraction_downloader_task(

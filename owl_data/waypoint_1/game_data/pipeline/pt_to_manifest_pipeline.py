@@ -210,7 +210,7 @@ def run_manifest_pipeline(
     logging.info("All threads started. Waiting for queues to be processed...")
     master_queue.join()
     logging.info("Master queue is empty. Downloader has finished its work.")
-    
+
     buffer_queue.join()
     logging.info("Buffer queue is empty. All manifest processing is complete.")
 

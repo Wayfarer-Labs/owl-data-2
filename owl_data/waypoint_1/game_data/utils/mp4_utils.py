@@ -4,53 +4,79 @@ import logging
 import numpy as np
 from typing import Optional
 
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
-def _sample_frames_at_stride(
-    container: av.container.Container,
-    stride_seconds: int,
-    num_frames: int,
+
+def _get_single_frame(
+    video_bytes: bytes, 
+    target_seconds: float, 
     resize_dims: Optional[tuple[int, int]]
-) -> np.ndarray:
-    """Helper to perform the actual frame sampling for a given stride."""
-    frames = []
-    stream = container.streams.video[0]
+) -> Optional[np.ndarray]:
+    """
+    Opens a video, seeks to a specific time, and extracts exactly one frame.
+    This is a robust but slower method that ensures a clean state for every seek.
     
-    total_duration_seconds = stream.duration * stream.time_base
-    
-    # Reset stream to the beginning for each stride sampling pass
-    container.seek(0)
-
-    for i in range(num_frames):
-        target_time_seconds = (i + 1) * stride_seconds
-        
-        if target_time_seconds > total_duration_seconds:
-            logging.warning(
-                f"Cannot sample at {target_time_seconds}s for stride {stride_seconds}s; video duration is only {total_duration_seconds:.2f}s."
-            )
-            break
+    Fixed to properly handle timestamp conversion and EOF conditions.
+    """
+    try:
+        with av.open(io.BytesIO(video_bytes)) as container:
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
             
-        try:
-            container.seek(int(target_time_seconds * 1_000_000), backward=True, any_frame=False, stream=stream)
+            # Get stream time base for proper timestamp conversion
+            tick = float(stream.time_base)  # seconds per tick
             
+            # Convert target seconds to stream PTS
+            def sec_to_pts(t: float) -> int:
+                return int(round(t / tick))
+            
+            # Get actual video duration in seconds
+            if stream.duration is not None and stream.time_base is not None:
+                duration_s = float(stream.duration * stream.time_base)
+            elif container.duration is not None:
+                duration_s = float(container.duration) / 1_000_000  # container duration is in microseconds
+            else:
+                duration_s = float("inf")
+            
+            # If target time is beyond video duration, return None
+            if target_seconds > duration_s:
+                logging.warning(f"Target time {target_seconds:.2f}s exceeds video duration {duration_s:.2f}s")
+                return None
+            
+            # Seek to the keyframe before the target time using proper stream PTS
+            target_pts = sec_to_pts(target_seconds)
+            container.seek(target_pts, backward=True, any_frame=False, stream=stream)
+            
+            # Small tolerance for floating point comparison
+            eps = 3 * tick
+            
+            # Decode frames until we find the one we want
             for frame in container.decode(video=0):
-                if frame.pts * stream.time_base >= target_time_seconds:
-                    frame_np = frame.to_ndarray(format='rgb24')
+                if frame.pts is None:
+                    continue
                     
+                frame_time = float(frame.pts * stream.time_base)
+                
+                # If we've reached/passed the requested target (with tolerance)
+                if frame_time + eps >= target_seconds:
+                    # Found it. Now process and return.
+                    frame_np = frame.to_ndarray(format='rgb24')
                     if resize_dims:
                         resized_frame = frame.reformat(width=resize_dims[0], height=resize_dims[1], format='rgb24')
                         frame_np = resized_frame.to_ndarray(format='rgb24')
-                        
-                    frame_chw = frame_np.transpose(2, 0, 1)
-                    frames.append(frame_chw)
-                    break 
-        except (av.AVError, StopIteration) as e:
-            logging.error(f"Error while seeking/decoding at {target_time_seconds}s for stride {stride_seconds}s: {e}")
-            break
+                    
+                    return frame_np.transpose(2, 0, 1) # Transpose to CHW
             
-    if not frames:
-        return np.array([])
-        
-    return np.stack(frames)
+            # If we get here, no frame >= target_seconds was found after seeking
+            # This means we've likely reached EOF
+            logging.warning(f"No frame found at or after {target_seconds:.2f}s (EOF reached)")
+            return None
+            
+    except (av.AVError, StopIteration) as e:
+        logging.error(f"Error extracting frame at {target_seconds:.2f}s: {e}")
+    
+    return None # Return None if the frame could not be extracted
 
 
 def sample_frames_from_bytes(
@@ -59,63 +85,57 @@ def sample_frames_from_bytes(
 ) -> dict[str, np.ndarray]:
     """
     Decodes an in-memory video and samples frames based on a given specification.
-
-    This function resizes frames to a maximum height of 360p while maintaining
-    aspect ratio. It returns a dictionary of NumPy arrays in CHW format.
-
-    Args:
-        video_bytes: The raw bytes of the video file.
-        strides_spec: A dictionary specifying the sampling.
-            - key (int): The stride in seconds between samples.
-            - value (int): The total number of frames to sample for this stride.
-            Example: {3: 15, 30: 15} will sample 15 frames at a 3s stride
-                     and 15 frames at a 30s stride.
-
-    Returns:
-        A dictionary mapping stride information to a NumPy array of frames.
-        e.g., {"stride-3_chw": array, "stride-30_chw": array}
     """
     sampled_data = {}
     
+    # --- Get video properties once from a temporary container ---
     try:
-        # Use a BytesIO object to allow seeking, which is required for sampling multiple strides
-        video_stream = io.BytesIO(video_bytes)
-        with av.open(video_stream) as container:
+        with av.open(io.BytesIO(video_bytes)) as container:
             stream = container.streams.video[0]
-            
+            total_duration_seconds = stream.duration * stream.time_base
             resize_dims = None
             if stream.height > 360:
                 scale = 360 / stream.height
                 new_width = int(stream.width * scale)
                 resize_dims = (new_width, 360)
+    except av.AVError as e:
+        logging.error(f"Failed to open video to get initial properties: {e}")
+        return {f"stride-{s}_chw": np.array([]) for s in strides_spec}
 
-            # --- Loop through the user-defined strides ---
-            for stride_seconds, num_frames in strides_spec.items():
-                logging.info(f"Sampling {num_frames} frames with {stride_seconds}-second stride...")
-                
-                frames = _sample_frames_at_stride(
-                    container=container,
-                    stride_seconds=stride_seconds,
-                    num_frames=num_frames,
-                    resize_dims=resize_dims
-                )
-                
-                key = f"stride-{stride_seconds}_chw"
-                sampled_data[key] = frames
+    # --- Loop through the user-defined strides ---
+    for stride_seconds, num_frames in strides_spec.items():
+        frames = []
+        key = f"stride-{stride_seconds}_chw"
+        
+        for i in range(num_frames):
+            target_time = (i + 1) * stride_seconds
+            
+            if target_time > total_duration_seconds:
+                logging.warning(f"Stopping stride {stride_seconds}s; target time {target_time:.2f}s is beyond video duration.")
+                break
 
-    except Exception as e:
-        logging.error(f"Failed to open or process video bytes with PyAV: {e}")
-        # On failure, populate keys with empty arrays
-        for stride_seconds in strides_spec:
-            key = f"stride-{stride_seconds}_chw"
-            sampled_data[key] = np.array([])
+            # Use the robust helper function for each frame
+            frame_chw = _get_single_frame(video_bytes, target_time, resize_dims)
+            
+            if frame_chw is not None:
+                frames.append(frame_chw)
+            else:
+                # If we fail to get a frame, stop trying for this stride
+                logging.error(f"Failed to retrieve frame for stride {stride_seconds} at {target_time}s. Halting this stride.")
+                break
+
+        sampled_data[key] = np.stack(frames) if frames else np.array([])
 
     return sampled_data
 
 
 def main():
     import sys
-    video_path = "/home/sky/owl-data-2/owl_data/waypoint_1/game_data/tars_by_size/205_500MB/4e3e5cbc95e64420/000000.mp4"
+    import os
+    from datetime import datetime
+    
+    video_path = "/home/sky/owl-data-2/pt_visualizations/tars/2025-09-17 14-59-42.mp4"
+    output_dir = "/home/sky/owl-data-2/pt_visualizations/manual_visualizations"
 
     try:
         logging.info(f"Reading video file from: {video_path}")
@@ -146,6 +166,175 @@ def main():
         else:
             print(f"'{name}': No frames were sampled (video might be too short for this stride).")
     print("----------------------------")
+
+    # Create visualizations
+    if any(array.size > 0 for array in sampled_frames.values()):
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Get video filename without extension for naming
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create detailed grid visualization
+        detailed_output_path = os.path.join(output_dir, f"{video_name}_detailed_{timestamp}.png")
+        _create_detailed_visualization(sampled_frames, video_name, detailed_output_path)
+        
+        # Create summary visualization
+        summary_output_path = os.path.join(output_dir, f"{video_name}_summary_{timestamp}.png")
+        _create_summary_visualization(sampled_frames, video_name, summary_output_path)
+        
+        print(f"\nVisualizations saved to:")
+        print(f"  Detailed: {detailed_output_path}")
+        print(f"  Summary: {summary_output_path}")
+    else:
+        print("No frames to visualize.")
+
+
+def _create_detailed_visualization(sampled_frames, video_name, output_path):
+    """Create a detailed grid visualization showing all frames."""
+    # Collect all valid frames with metadata
+    all_frames = []
+    for stride_key, frames in sampled_frames.items():
+        if frames.size > 0:
+            stride_seconds = int(stride_key.split('-')[1].split('_')[0])
+            for i, frame in enumerate(frames):
+                timestamp = i * stride_seconds
+                all_frames.append({
+                    'frame': frame,
+                    'stride_seconds': stride_seconds,
+                    'timestamp': timestamp,
+                    'stride_key': stride_key
+                })
+    
+    if not all_frames:
+        return
+    
+    # Determine grid layout
+    num_frames = len(all_frames)
+    cols = min(5, num_frames)
+    rows = (num_frames + cols - 1) // cols
+    import matplotlib.pyplot as plt
+    # Create visualization
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
+    if rows == 1:
+        axes = [axes] if cols == 1 else axes
+    elif cols == 1:
+        axes = [[ax] for ax in axes]
+    
+    fig.suptitle(f"Detailed Frame Grid: {video_name}", fontsize=16)
+    
+    # Colors for different strides
+    colors = ['red', 'blue', 'green', 'orange', 'purple']
+    stride_colors = {}
+    
+    for i, frame_data in enumerate(all_frames):
+        row, col = divmod(i, cols)
+        ax = axes[row][col] if rows > 1 else axes[col]
+        
+        frame = frame_data['frame']
+        stride_seconds = frame_data['stride_seconds']
+        timestamp = frame_data['timestamp']
+        
+        # Convert CHW to HWC and normalize
+        if frame.shape[0] == 3:  # CHW format
+            frame_rgb = np.transpose(frame, (1, 2, 0))
+        else:
+            frame_rgb = frame
+        
+        frame_rgb = np.clip(frame_rgb / 255.0, 0, 1)
+        
+        # Get color for this stride
+        if stride_seconds not in stride_colors:
+            stride_colors[stride_seconds] = colors[len(stride_colors) % len(colors)]
+        
+        ax.imshow(frame_rgb)
+        ax.set_title(f"{stride_seconds}s stride\nt={timestamp}s", fontsize=10)
+        ax.axis('off')
+        
+        # Add colored border
+        for spine in ax.spines.values():
+            spine.set_edgecolor(stride_colors[stride_seconds])
+            spine.set_linewidth(3)
+            spine.set_visible(True)
+    
+    # Hide unused subplots
+    for i in range(num_frames, rows * cols):
+        row, col = divmod(i, cols)
+        ax = axes[row][col] if rows > 1 else axes[col]
+        ax.axis('off')
+    
+    # Add legend
+    legend_elements = []
+    for stride_seconds, color in stride_colors.items():
+        num_frames_for_stride = sum(1 for f in all_frames if f['stride_seconds'] == stride_seconds)
+        legend_elements.append(
+            patches.Patch(color=color, label=f"{stride_seconds}s stride ({num_frames_for_stride} frames)")
+        )
+    
+    if legend_elements:
+        fig.legend(handles=legend_elements, loc='lower center', bbox_to_anchor=(0.5, 0.02), ncol=len(legend_elements))
+    
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92, bottom=0.12)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def _create_summary_visualization(sampled_frames, video_name, output_path):
+    """Create a summary visualization showing one representative frame per stride."""
+    # Get one representative frame from each stride
+    stride_frames = []
+    for stride_key, frames in sampled_frames.items():
+        if frames.size > 0:
+            stride_seconds = int(stride_key.split('-')[1].split('_')[0])
+            # Take middle frame as representative
+            mid_idx = len(frames) // 2
+            representative_frame = frames[mid_idx]
+            representative_time = mid_idx * stride_seconds
+            
+            stride_frames.append({
+                'stride_seconds': stride_seconds,
+                'frame': representative_frame,
+                'timestamp': representative_time,
+                'total_frames': len(frames)
+            })
+    
+    if not stride_frames:
+        return
+    
+    # Sort by stride
+    stride_frames.sort(key=lambda x: x['stride_seconds'])
+    
+    # Create horizontal layout
+    fig, axes = plt.subplots(1, len(stride_frames), figsize=(len(stride_frames) * 3, 4))
+    
+    if len(stride_frames) == 1:
+        axes = [axes]
+    
+    fig.suptitle(f"Video Summary: {video_name}", fontsize=12)
+    
+    # Plot representative frames
+    for i, (ax, stride_data) in enumerate(zip(axes, stride_frames)):
+        frame = stride_data['frame']
+        timestamp = stride_data['timestamp']
+        stride_seconds = stride_data['stride_seconds']
+        total_frames = stride_data['total_frames']
+        
+        # Convert CHW to HWC and normalize
+        if frame.shape[0] == 3:  # CHW format
+            frame_rgb = np.transpose(frame, (1, 2, 0))
+        else:
+            frame_rgb = frame
+        
+        frame_rgb = np.clip(frame_rgb / 255.0, 0, 1)
+        
+        ax.imshow(frame_rgb)
+        ax.set_title(f"{stride_seconds}s stride\n({total_frames} frames)\nShowing t={timestamp}s", fontsize=10)
+        ax.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
 
 
 if __name__ == "__main__":

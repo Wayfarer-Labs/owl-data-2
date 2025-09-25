@@ -51,11 +51,11 @@ def get_vid_info(path):
         "duration": duration
     }
 
-def get_all_mp4s(root_dir):
+def get_all_mp4s(root_dir, file_type):
     mp4s = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for fname in filenames:
-            if fname.endswith('.mp4'):
+            if fname.endswith(file_type):
                 mp4s.append(os.path.join(dirpath, fname))
     return mp4s
 
@@ -88,11 +88,12 @@ def main():
     parser.add_argument('--num_cpus', type=int, default=8, help='Number of CPUs to use for Ray')
     parser.add_argument('--node_rank', type=int, default=0, help='Rank of this node (0-indexed)')
     parser.add_argument('--num_nodes', type=int, default=1, help='Total number of nodes')
+    parser.add_argument('--file_type', type=str, default='mp4', help='File type to search for')
     args = parser.parse_args()
 
     ray.init(num_cpus=args.num_cpus)
 
-    mp4_paths = get_all_mp4s(args.root_dir)
+    mp4_paths = get_all_mp4s(args.root_dir, args.file_type)
     print(f"Found {len(mp4_paths)} mp4 files in {args.root_dir}")
 
     # Shard work across nodes

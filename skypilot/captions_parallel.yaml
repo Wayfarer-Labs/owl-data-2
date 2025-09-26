@@ -1,0 +1,88 @@
+resources:
+  cloud: kubernetes
+  accelerators: H200:8
+
+num_nodes: 5
+
+# File mounts removed - code already exists on cluster at /mnt/data/shahbuland/owl-data-2
+
+setup: |
+  sudo apt-get update
+  sudo apt-get install -y libgl1
+
+  # Install Python dependencies if not already present
+  if [ ! -f /mnt/data/envs/.venv/bin/activate ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv /mnt/data/envs/.venv
+  fi
+
+  source /mnt/data/envs/.venv/bin/activate
+  pip install --upgrade pip
+  pip install vllm openai torch torchvision transformers accelerate qwen-vl-utils[decord]==0.0.8 Pillow tqdm python-dotenv
+
+run: |
+  source /mnt/data/envs/.venv/bin/activate
+  cd /mnt/data/shahbuland/owl-data-2
+
+  # Launch 8 parallel vLLM servers on this node
+  echo "Node ${SKYPILOT_NODE_RANK}: Launching 8 parallel vLLM servers..."
+
+  # Kill any existing vLLM servers
+  pkill -f "vllm serve" 2>/dev/null || true
+  sleep 2
+
+  # Launch 8 independent servers, one per GPU
+  for gpu_id in {0..7}; do
+    # Each node uses different port ranges to avoid conflicts
+    # Node 0: 8000-8007, Node 1: 8100-8107, etc.
+    port=$((8000 + ${SKYPILOT_NODE_RANK}*100 + gpu_id))
+
+    echo "Starting vLLM server on GPU $gpu_id, port $port..."
+
+    CUDA_VISIBLE_DEVICES=$gpu_id vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+      --enable-prefix-caching \
+      --kv-cache-dtype fp8 \
+      --quantization fp8 \
+      --trust-remote-code \
+      --host 0.0.0.0 \
+      --port $port \
+      --gpu-memory-utilization 0.95 \
+      --max-model-len 8192 \
+      --limit-mm-per-prompt '{"image":10,"video":10}' \
+      > /tmp/vllm_gpu_${gpu_id}.log 2>&1 &
+
+    sleep 2
+  done
+
+  # Wait for all servers to initialize
+  echo "Waiting for servers to initialize (30 seconds)..."
+  sleep 30
+
+  # Verify servers are running
+  echo "Checking server status..."
+  for gpu_id in {0..7}; do
+    port=$((8000 + ${SKYPILOT_NODE_RANK}*100 + gpu_id))
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:$port/health | grep -q "200"; then
+      echo "  GPU $gpu_id (port $port): ✓ Running"
+    else
+      echo "  GPU $gpu_id (port $port): ✗ Not responding"
+    fi
+  done
+
+  # Now run the parallel captioning script
+  echo "Starting parallel captioning on node ${SKYPILOT_NODE_RANK}..."
+
+  # Use the correct virtual environment for the main script
+  source deactivate
+  source /mnt/data/shahbuland/venv/bin/activate
+
+  BASE_PORT=$((8000 + ${SKYPILOT_NODE_RANK}*100))
+
+  python -m owl_data.waypoint_1.captions_from_tensors_parallel \
+    --root_dir /mnt/data/waypoint_1/data/egoexplore_360P \
+    --output_dir /mnt/data/waypoint_1/data_pt/egoexplore_360P \
+    --batch_size 64 \
+    --node_rank ${SKYPILOT_NODE_RANK} \
+    --num_nodes ${SKYPILOT_NUM_NODES} \
+    --port $BASE_PORT \
+    --num_servers 8

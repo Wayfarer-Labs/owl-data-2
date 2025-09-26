@@ -1,0 +1,89 @@
+resources:
+  cloud: kubernetes
+  accelerators: H200:8
+
+num_nodes: 1  # Single node for testing
+
+# Removed file_mounts since the code is already on the cluster
+
+setup: |
+  sudo apt-get update
+  sudo apt-get install -y libgl1
+
+run: |
+  source /mnt/data/envs/.venv/bin/activate
+  cd /mnt/data/shahbuland/owl-data-2
+
+  echo "==================== Single Node Parallel Test ===================="
+  echo "Testing parallel vLLM setup on 1 node with 8 GPUs"
+  echo "==================================================================="
+
+  # Kill any existing vLLM servers
+  pkill -f "vllm serve" 2>/dev/null || true
+  sleep 2
+
+  # Launch 8 independent servers, one per GPU
+  echo "Launching 8 parallel vLLM servers..."
+  for gpu_id in {0..7}; do
+    port=$((8000 + gpu_id))
+    echo "Starting vLLM server on GPU $gpu_id, port $port..."
+
+    CUDA_VISIBLE_DEVICES=$gpu_id vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+      --enable-prefix-caching \
+      --kv-cache-dtype fp8 \
+      --quantization fp8 \
+      --trust-remote-code \
+      --host 0.0.0.0 \
+      --port $port \
+      --gpu-memory-utilization 0.95 \
+      --max-model-len 8192 \
+      --limit-mm-per-prompt '{"image":10,"video":10}' \
+      > /tmp/vllm_gpu_${gpu_id}.log 2>&1 &
+
+    sleep 2
+  done
+
+  # Wait for servers to initialize
+  echo "Waiting for servers to initialize (30 seconds)..."
+  sleep 30
+
+  # Check server status
+  echo "Checking server health..."
+  all_healthy=true
+  for gpu_id in {0..7}; do
+    port=$((8000 + gpu_id))
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:$port/health 2>/dev/null | grep -q "200"; then
+      echo "  GPU $gpu_id (port $port): ✓ Running"
+    else
+      echo "  GPU $gpu_id (port $port): ✗ Not responding"
+      tail -n 10 /tmp/vllm_gpu_${gpu_id}.log
+      all_healthy=false
+    fi
+  done
+
+  if ! $all_healthy; then
+    echo "ERROR: Some servers failed to start. Aborting."
+    exit 1
+  fi
+
+  echo ""
+  echo "✓ All 8 servers running successfully!"
+  echo ""
+
+  # Switch to the correct environment for the main script
+  source deactivate
+  source /mnt/data/shahbuland/venv/bin/activate
+
+  # Run the parallel captioning
+  echo "Starting parallel captioning..."
+  python -m owl_data.waypoint_1.captions_from_tensors_parallel \
+    --root_dir /mnt/data/waypoint_1/data/egoexplore_360P \
+    --output_dir /mnt/data/waypoint_1/data_pt/egoexplore_360P \
+    --batch_size 64 \
+    --node_rank 0 \
+    --num_nodes 1 \
+    --port 8000 \
+    --num_servers 8
+
+  echo ""
+  echo "==================== Test Complete ===================="

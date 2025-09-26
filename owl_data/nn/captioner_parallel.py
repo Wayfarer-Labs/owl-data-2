@@ -86,7 +86,7 @@ class VLMCaptionerParallel:
       num_servers = 8
    ):
 
-      self.pipe = VLLMPipelineParallel(port=port, model_name=model_name, num_servers=num_servers)
+      self.pipe = VLLMPipelineParallel(base_port=port, model_name=model_name, num_servers=num_servers)
       self.window_length = window_length
       self.kernel = kernel
       self.stride = stride
@@ -190,9 +190,6 @@ class VLMCaptionerParallel:
 
       return captions
 
-
-# Backward compatibility
-VLMCaptioner = VLMCaptionerParallel
 
 
 if __name__ == "__main__":

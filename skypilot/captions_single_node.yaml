@@ -11,7 +11,8 @@ setup: |
   sudo apt-get install -y libgl1
 
 run: |
-  source /mnt/data/envs/.venv/bin/activate
+  # Use the main environment that has the owl-data-2 code
+  source /mnt/data/shahbuland/venv/bin/activate
   cd /mnt/data/shahbuland/owl-data-2
 
   echo "==================== Single Node Parallel Test ===================="
@@ -22,6 +23,9 @@ run: |
   pkill -f "vllm serve" 2>/dev/null || true
   sleep 2
 
+  # First ensure vLLM is available
+  pip install vllm 2>/dev/null || true
+
   # Launch 8 independent servers, one per GPU
   echo "Launching 8 parallel vLLM servers..."
   for gpu_id in {0..7}; do
@@ -30,7 +34,7 @@ run: |
 
     CUDA_VISIBLE_DEVICES=$gpu_id vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
       --enable-prefix-caching \
-      --kv-cache-dtype fp8 \
+      --prefix-caching-hash-algo sha256 \
       --quantization fp8 \
       --trust-remote-code \
       --host 0.0.0.0 \
@@ -63,6 +67,9 @@ run: |
 
   if ! $all_healthy; then
     echo "ERROR: Some servers failed to start. Aborting."
+    echo "Killing any partial servers..."
+    pkill -f "vllm serve" 2>/dev/null || true
+    echo "Check logs in /tmp/vllm_gpu_*.log for details"
     exit 1
   fi
 
@@ -70,9 +77,7 @@ run: |
   echo "✓ All 8 servers running successfully!"
   echo ""
 
-  # Switch to the correct environment for the main script
-  source deactivate
-  source /mnt/data/shahbuland/venv/bin/activate
+  # Stay in the same environment (already activated above)
 
   # Run the parallel captioning
   echo "Starting parallel captioning..."

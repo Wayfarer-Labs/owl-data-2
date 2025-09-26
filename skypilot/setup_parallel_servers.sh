@@ -33,7 +33,7 @@ for gpu_id in {0..7}; do
 
     CUDA_VISIBLE_DEVICES=$gpu_id vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
         --enable-prefix-caching \
-        --kv-cache-dtype fp8 \
+        --prefix-caching-hash-algo sha256 \
         --quantization fp8 \
         --trust-remote-code \
         --host 0.0.0.0 \

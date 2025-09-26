@@ -24,7 +24,7 @@ sleep 2
 
 # Step 2: Launch servers
 echo "[2/4] Launching 8 parallel vLLM servers..."
-source /mnt/data/envs/.venv/bin/activate
+source /mnt/data/shahbuland/venv/bin/activate
 
 for gpu_id in {0..7}; do
     port=$((8000 + gpu_id))
@@ -32,7 +32,7 @@ for gpu_id in {0..7}; do
 
     CUDA_VISIBLE_DEVICES=$gpu_id vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
         --enable-prefix-caching \
-        --kv-cache-dtype fp8 \
+        --prefix-caching-hash-algo sha256 \
         --quantization fp8 \
         --trust-remote-code \
         --host 0.0.0.0 \
@@ -80,8 +80,7 @@ echo ""
 
 # Step 4: Run quick benchmark
 echo "[4/4] Running performance test..."
-source deactivate
-source /mnt/data/shahbuland/venv/bin/activate
+# Stay in the same environment
 cd /mnt/data/shahbuland/owl-data-2
 
 # Create a small test to verify throughput

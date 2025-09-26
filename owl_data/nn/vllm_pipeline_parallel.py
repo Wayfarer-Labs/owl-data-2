@@ -144,6 +144,23 @@ class VLLMPipelineParallel:
 
         print(f"Initialized {num_servers} parallel vLLM clients on ports {base_port}-{base_port+num_servers-1}")
 
+        # Quick health check on initialization
+        import requests
+        healthy_count = 0
+        for i in range(num_servers):
+            port = base_port + i
+            try:
+                resp = requests.get(f"http://localhost:{port}/health", timeout=1)
+                if resp.status_code == 200:
+                    healthy_count += 1
+            except:
+                pass
+
+        if healthy_count == 0:
+            raise RuntimeError(f"No vLLM servers responding on ports {base_port}-{base_port+num_servers-1}")
+        elif healthy_count < num_servers:
+            print(f"Warning: Only {healthy_count}/{num_servers} servers are healthy")
+
     def __call__(
         self,
         video_fps_list,
@@ -185,10 +202,19 @@ class VLLMPipelineParallel:
                 client = self.clients[client_idx]
                 tasks.append(one_request(client, messages))
 
-            return await asyncio.gather(*tasks)
+            # Use return_exceptions=True to handle partial failures
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Check for failures and retry or raise
+            final_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    print(f"Error processing request {i}: {result}")
+                    # Could implement retry logic here
+                    raise result
+                final_results.append(result)
+
+            return final_results
 
         return asyncio.run(run_all())
 
-
-# Backward compatibility: alias the new class to the old name
-VLLMPipeline = VLLMPipelineParallel

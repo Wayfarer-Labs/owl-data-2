@@ -17,3 +17,4 @@ qwen-vl-utils[decord]==0.0.8
 Pillow
 torchvision
 openai
+requests

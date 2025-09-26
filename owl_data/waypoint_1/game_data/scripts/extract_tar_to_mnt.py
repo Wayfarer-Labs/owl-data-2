@@ -1,5 +1,5 @@
-import io, logging, os, sys, shutil, pathlib, tarfile, functools, boto3, json, csv
-import torch
+import io, logging, os, sys, shutil, pathlib, tarfile, functools, boto3, json, csv, torch
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,12 +23,12 @@ def _is_controller(inputs: dict) -> bool:
     return any('GAMEPAD' in k.upper() for k in inputs['event_type'])
 
 def _is_first_person_shooter(metadata: dict) -> bool:
-    from fps_3ps_detector import FPS_GAMES
-    return metadata['game_name'] in FPS_GAMES
+    from fps_3ps_detector import exe_perspective
+    return exe_perspective.get(metadata['game_name']) == 'fps'
 
 def _is_third_person(metadata: dict) -> bool:
-    from fps_3ps_detector import THIRD_PERSON_GAMES
-    return metadata['game_name'] in THIRD_PERSON_GAMES
+    from fps_3ps_detector import exe_perspective
+    return exe_perspective.get(metadata['game_name'], 'unknown') == '3ps'
 
 
 TASK_LIST_PATH = pathlib.Path('task_list.txt')
@@ -67,7 +67,7 @@ def _read_inputs_from_tar(tf: tarfile.TarFile) -> dict:
 
     Heuristics:
       - Prefer a top-level 'inputs.csv'
-      - Fallback to the first '*.csv' whose name contains 'input'
+      - Fallback to the first '*.csv'
       - If none found, return {}
       - Delimiter auto-detection among {',', '\\t', ';'} by simple frequency
     """
@@ -84,7 +84,7 @@ def _read_inputs_from_tar(tf: tarfile.TarFile) -> dict:
     if candidate is None:
         for m in members:
             name = pathlib.Path(m.name).name.lower()
-            if m.isfile() and name.endswith(".csv") and "input" in name:
+            if m.isfile() and name.endswith(".csv") in name:
                 candidate = m
                 break
 
@@ -124,7 +124,7 @@ def _read_inputs_from_tar(tf: tarfile.TarFile) -> dict:
     return columns
 
 
-def download_tar(task_id: str, bucket_name: str = 'game-data') -> tuple[pathlib.Path, dict]:
+def download_tar(task_id: str, bucket_name: str = 'game-data') -> tuple[pathlib.Path, dict, dict]:
     """
     Downloads a tar file from the bucket and stores it under MNT_DST_PATH.
     Returns:
@@ -217,15 +217,6 @@ def main():
     args.add_argument('--node-rank', type=int, default=0)
     args = args.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format=f'%(asctime)s - %(levelname)s - Node {args.node_rank}/{args.num_nodes} - %(message)s',
-        handlers=[
-            logging.FileHandler(f'extract_tar_to_mnt_{args.node_rank}.log', mode='a'),
-            logging.StreamHandler()
-        ]
-    )
-
     with open(args.task_list_path, 'r') as f:
         task_ids = [line.strip() for line in f.readlines()]
 
@@ -243,6 +234,7 @@ def main():
             logging.info(f'Extracted {task_id}')
         except Exception as e:
             logging.error(f'Skipping {task_id} because of error: {e}')
+
 
 def get_all_games(task_list_path: str) -> dict[str, int]:
     from collections import Counter
@@ -264,12 +256,11 @@ def get_all_games(task_list_path: str) -> dict[str, int]:
 
     
     with open('games.txt', 'w') as f:
-        json.dump(dict(Counter(games).most_common()), f, indent=2)
-
+        json.dump(games := dict(Counter(games).most_common()), f, indent=2)
+        return games
 
 
 if __name__ == '__main__':
-    # main()
     logging.basicConfig(
         level=logging.INFO,
         format=f'%(asctime)s - %(levelname)s - %(message)s',
@@ -278,5 +269,6 @@ if __name__ == '__main__':
             logging.StreamHandler()
         ]
     )
+    main()
 
-    get_all_games('task_list.txt')
+    # get_all_games('task_list.txt')

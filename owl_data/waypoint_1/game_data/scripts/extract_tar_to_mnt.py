@@ -239,8 +239,8 @@ def main():
     import argparse
     args = argparse.ArgumentParser()
     args.add_argument('--task-list-path', type=str, default='task_list.txt')
-    args.add_argument('--num-nodes', type=int, default=1)
-    args.add_argument('--node-rank', type=int, default=0)
+    args.add_argument('--num_nodes', type=int, default=1)
+    args.add_argument('--node_rank', type=int, default=0)
     args = args.parse_args()
 
     with open(args.task_list_path, 'r') as f:

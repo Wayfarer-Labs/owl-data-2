@@ -24,11 +24,11 @@ def _is_controller(inputs: dict) -> bool:
 
 def _is_first_person_shooter(metadata: dict) -> bool:
     from fps_3ps_detector import exe_perspective
-    return exe_perspective.get(metadata['game_name']) == 'fps'
+    return exe_perspective.get(metadata['game_exe']) == 'fps'
 
 def _is_third_person(metadata: dict) -> bool:
     from fps_3ps_detector import exe_perspective
-    return exe_perspective.get(metadata['game_name'], 'unknown') == '3ps'
+    return exe_perspective.get(metadata['game_exe']) == '3ps'
 
 
 TASK_LIST_PATH = pathlib.Path('task_list.txt')
@@ -149,7 +149,7 @@ def download_tar(task_id: str, bucket_name: str = 'game-data') -> tuple[pathlib.
 
     return tar_path, metadata, inputs
 
-def extract_tar(tar_path: pathlib.Path) -> None:
+def extract_tar(tar_path: pathlib.Path) -> pathlib.Path:
     """
     Extracts tar into a directory with the same stem as the tar file.
     Example: /a/b/uuid.tar -> /a/b/uuid/
@@ -171,6 +171,8 @@ def extract_tar(tar_path: pathlib.Path) -> None:
             if _is_within_directory(dst_dir, target_path):
                 safe_members.append(m)
         tf.extractall(path=dst_dir, members=safe_members)
+    
+    return dst_dir
 
 
 def refactor_tar_in_mnt(tar_path: pathlib.Path, metadata: dict, inputs: dict) -> pathlib.Path:
@@ -229,11 +231,13 @@ def main():
     for task_id in local_task_ids:
         try:
             tar_path, metadata, inputs = download_tar(task_id)
-            new_tar_path = refactor_tar_in_mnt(tar_path, metadata, inputs)
-            extract_tar(new_tar_path)
+            extracted_dir = extract_tar(tar_path)
+            refactor_tar_in_mnt(extracted_dir, metadata, inputs)
             logging.info(f'Extracted {task_id}')
         except Exception as e:
+            import traceback
             logging.error(f'Skipping {task_id} because of error: {e}')
+            logging.error(traceback.format_exc())
 
 
 def get_all_games(task_list_path: str) -> dict[str, int]:

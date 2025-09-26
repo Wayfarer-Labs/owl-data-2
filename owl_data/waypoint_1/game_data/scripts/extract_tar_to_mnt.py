@@ -1,5 +1,5 @@
 import io, logging, os, sys, shutil, pathlib, tarfile, functools, boto3, json, csv, torch
-
+from tqdm import tqdm
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,7 +32,7 @@ def _is_third_person(metadata: dict) -> bool:
 
 
 TASK_LIST_PATH = pathlib.Path('task_list.txt')
-MNT_DST_PATH = pathlib.Path('/mnt/data/datasets/waypoint_1/extracted_tars')
+MNT_DST_PATH = pathlib.Path('/mnt/data/datasets/extracted_tars')
 
 
 def _normalize_tar_filename(task_id: str) -> str:
@@ -84,7 +84,7 @@ def _read_inputs_from_tar(tf: tarfile.TarFile) -> dict:
     if candidate is None:
         for m in members:
             name = pathlib.Path(m.name).name.lower()
-            if m.isfile() and name.endswith(".csv") in name:
+            if m.isfile() and name.endswith(".csv"):
                 candidate = m
                 break
 
@@ -175,15 +175,13 @@ def extract_tar(tar_path: pathlib.Path) -> pathlib.Path:
     return dst_dir
 
 
-def refactor_tar_in_mnt(tar_path: pathlib.Path, metadata: dict, inputs: dict) -> pathlib.Path:
+def refactor_tar_in_mnt(extracted_dir: pathlib.Path, metadata: dict, inputs: dict) -> pathlib.Path:
     """
-    Refactors the extracted directory under MNT_DST_PATH based on metadata:
-      controller/ -> fps/ or 3ps/
-      kbm/        -> fps/ or 3ps/
-    Unknowns are routed to 'unknown' and 'other' buckets, respectively.
+    `extracted_dir` is the directory returned by `extract_tar`.
+    Idempotent behavior:
+      - If the final destination already exists, we keep it and remove `extracted_dir`.
+      - Otherwise, we move `extracted_dir` exactly to the final path (no nesting).
     """
-    extracted_dir = tar_path.with_suffix('')  # e.g., uuid/
-
     # Choose top-level device bucket
     if _is_controller(inputs):
         device_bucket = 'controller'
@@ -204,12 +202,38 @@ def refactor_tar_in_mnt(tar_path: pathlib.Path, metadata: dict, inputs: dict) ->
     dst_base.mkdir(parents=True, exist_ok=True)
 
     dst_dir = dst_base / extracted_dir.name
-    # Move entire extracted directory into the target bucket
-    shutil.move(str(extracted_dir), str(dst_dir))
-    logging.info(f'Moved {extracted_dir} to {dst_dir}')
 
+    if dst_dir.exists():
+        # Already organized there; delete the redundant extracted copy and return
+        if extracted_dir.resolve() != dst_dir.resolve() and extracted_dir.exists():
+            shutil.rmtree(extracted_dir)
+        logging.info(f'Already placed at {dst_dir}, skipping move.')
+        return dst_dir
+
+    # Destination does not exist: move exactly to dst_dir (no nesting)
+    # Use rename when on same filesystem; shutil.move falls back to copy+remove cross-device.
+    extracted_dir.rename(dst_dir)
+    logging.info(f'Moved {extracted_dir} to {dst_dir}')
     return dst_dir
 
+
+def process_entire_tar(task_id: str):
+    try:
+        logging.info(f'Processing {task_id}')
+        tar_path, metadata, inputs = download_tar(task_id)
+        logging.info(f'Downloaded {task_id}')
+        extracted_dir = extract_tar(tar_path)
+        logging.info(f'Extracted {task_id}')
+        refactor_tar_in_mnt(extracted_dir, metadata, inputs)
+        logging.info(f'Refactored {task_id}')
+        os.remove(tar_path)
+        logging.info(f'Removed {tar_path}')
+        return True
+    except Exception as e:
+        import traceback
+        logging.error(f'Skipping {task_id} because of error: {e}')
+        logging.error(traceback.format_exc())
+        return False
 
 def main():
     import argparse
@@ -228,16 +252,8 @@ def main():
         if i % args.num_nodes == args.node_rank
     ]
 
-    for task_id in local_task_ids:
-        try:
-            tar_path, metadata, inputs = download_tar(task_id)
-            extracted_dir = extract_tar(tar_path)
-            refactor_tar_in_mnt(extracted_dir, metadata, inputs)
-            logging.info(f'Extracted {task_id}')
-        except Exception as e:
-            import traceback
-            logging.error(f'Skipping {task_id} because of error: {e}')
-            logging.error(traceback.format_exc())
+    for task_id in tqdm(local_task_ids, desc='Processing tasks'):
+        process_entire_tar(task_id)
 
 
 def get_all_games(task_list_path: str) -> dict[str, int]:

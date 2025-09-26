@@ -46,7 +46,6 @@ def create_manifest_record(
         'is_video_mostly_dark': None,
         'is_dpi_scale_issue': None,
         'video_menu_percent': None,
-        'menu_flag_threshold': MENU_THRESHOLD,
         'is_video_mostly_menu': None,
         'error': None,
         'error_traceback': None,

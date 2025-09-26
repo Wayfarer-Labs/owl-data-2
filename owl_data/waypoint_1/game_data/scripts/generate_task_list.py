@@ -124,7 +124,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     start_dt = parse_user_datetime(args.start) if args.start else None
-    end_dt = parse_user_datetime(args.end) if args.end else datetime(2025, 9, 9, 17, 13, 39, tzinfo=timezone(timedelta(hours=-4)))
+    end_dt = parse_user_datetime(args.end) if args.end else None
 
     # If end was provided as date-only, bump to end-of-day UTC
     if args.end and len(args.end.strip()) == 10:

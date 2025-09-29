@@ -238,5 +238,5 @@ if __name__ == '__main__':
         source_bucket=SOURCE_BUCKET,
         manifest_bucket=MANIFEST_BUCKET,
         master_task_list=tasks,
-        skip_existing=False
+        skip_existing=True
     ) 

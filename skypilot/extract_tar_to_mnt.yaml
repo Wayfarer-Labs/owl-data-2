@@ -20,4 +20,3 @@ run: |
   /mnt/data/sami/owl-data-2/venv/bin/python owl_data/waypoint_1/game_data/scripts/extract_tar_to_mnt.py \
     --node_rank ${SKYPILOT_NODE_RANK} \
     --num_nodes $SKYPILOT_NUM_NODES \
-

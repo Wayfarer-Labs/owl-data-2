@@ -177,7 +177,6 @@ def list_pt_files_in_bucket(
         logging.error(f"Failed to list .pt files in S3: {e}")
         raise
 
-
 def get_missing_pt_files(
     s3_client,
     source_bucket: str,
@@ -196,13 +195,20 @@ def get_missing_pt_files(
     Returns:
         List of TAR S3 keys that need to be processed (missing .pt files)
     """
-    missing_tars = []
+    # Get all .pt files in the manifest bucket
+    pt_files = list_pt_files_in_bucket(s3_client, manifest_bucket)
     
-    for tar_key in tar_s3_keys:
-        pt_key = convert_s3_key_to_pt_key(tar_key)
-        
-        if not check_pt_file_exists(s3_client, manifest_bucket, pt_key):
-            missing_tars.append(tar_key)
+    # Convert .pt files to their corresponding TAR keys by removing .pt suffix
+    existing_tar_keys = set([
+        key.replace('.pt', '') for key in pt_files
+        if key.endswith('.pt')
+    ])
     
-    logging.info(f"Found {len(missing_tars)} TAR files missing corresponding .pt files")
-    return missing_tars 
+    # Convert TAR keys to set for efficient lookup
+    tar_keys_set = set([key.replace('.tar', '') for key in tar_s3_keys])
+    
+    # Find missing TAR files using set difference
+    missing_tar_keys = tar_keys_set - existing_tar_keys
+    
+    logging.info(f"Found {len(missing_tar_keys)} TAR files missing corresponding .pt files")
+    return list([key + '.tar' for key in missing_tar_keys])

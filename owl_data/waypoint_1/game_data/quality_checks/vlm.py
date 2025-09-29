@@ -6,7 +6,11 @@ import time
 import requests
 import numpy as np
 from PIL import Image
+import dotenv
+from functools import wraps
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+dotenv.load_dotenv()
 
 # --- Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -17,6 +21,16 @@ API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-f
 PROMPT = "Is this image from a video game showing active gameplay or a menu/UI screen? Answer with only the single word 'gameplay' or 'menu'."
 
 
+def log_time(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        logging.info(f"{func.__name__} took {end_time - start_time:.2f} seconds")
+        return result
+    return wrapper
+
 def _encode_frame(frame_chw: np.ndarray) -> str:
     """Converts a CHW NumPy array to a base64 encoded JPEG string."""
     frame_hwc = frame_chw.transpose(1, 2, 0)
@@ -25,6 +39,7 @@ def _encode_frame(frame_chw: np.ndarray) -> str:
     image.save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
+@log_time
 def _classify_single_frame(encoded_frame: str, max_retries: int = 3) -> str:
     """Sends a single frame to the Gemini API and returns the classification."""
     payload = {

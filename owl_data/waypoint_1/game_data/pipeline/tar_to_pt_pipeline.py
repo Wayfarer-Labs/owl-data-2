@@ -232,7 +232,7 @@ if __name__ == '__main__':
     local_tasks = [t for i, t in enumerate(tasks) if i % args.num_nodes == args.node_rank]
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format=f'%(asctime)s - %(levelname)s - Node {args.node_rank}/{args.num_nodes} - %(message)s'
     )
 

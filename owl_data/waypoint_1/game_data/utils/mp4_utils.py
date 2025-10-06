@@ -2,131 +2,56 @@ import io
 import av
 import logging
 import numpy as np
+import pathlib
 from typing import Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 
-def _get_single_frame(
-    video_bytes: bytes, 
-    target_seconds: float, 
-    resize_dims: Optional[tuple[int, int]]
-) -> Optional[np.ndarray]:
+
+def downsample_video_from_path(
+    in_video_path: pathlib.Path,
+    intervals_seconds: list[float] = [60.] * 10,
+    downsampled_fps: int = 10,
+    new_height: int = 240,
+    crf: int = 18,
+) -> list[pathlib.Path]:
     """
-    Opens a video, seeks to a specific time, and extracts exactly one frame.
-    This is a robust but slower method that ensures a clean state for every seek.
+    Decodes an in-memory video and downsamples it based on a given specification.
+    """
+    import subprocess, ffmpeg
+    out_path = pathlib.Path('/tmp') / in_video_path.stem
     
-    Fixed to properly handle timestamp conversion and EOF conditions.
-    """
-    try:
-        with av.open(io.BytesIO(video_bytes)) as container:
-            stream = container.streams.video[0]
-            stream.thread_type = "AUTO"
-            
-            # Get stream time base for proper timestamp conversion
-            tick = float(stream.time_base)  # seconds per tick
-            
-            # Convert target seconds to stream PTS
-            def sec_to_pts(t: float) -> int:
-                return int(round(t / tick))
-            
-            # Get actual video duration in seconds
-            if stream.duration is not None and stream.time_base is not None:
-                duration_s = float(stream.duration * stream.time_base)
-            elif container.duration is not None:
-                duration_s = float(container.duration) / 1_000_000  # container duration is in microseconds
-            else:
-                duration_s = float("inf")
-            
-            # If target time is beyond video duration, return None
-            if target_seconds > duration_s:
-                logging.warning(f"Target time {target_seconds:.2f}s exceeds video duration {duration_s:.2f}s")
-                return None
-            
-            # Seek to the keyframe before the target time using proper stream PTS
-            target_pts = sec_to_pts(target_seconds)
-            container.seek(target_pts, backward=True, any_frame=False, stream=stream)
-            
-            # Small tolerance for floating point comparison
-            eps = 3 * tick
-            
-            # Decode frames until we find the one we want
-            for frame in container.decode(video=0):
-                if frame.pts is None:
-                    continue
-                    
-                frame_time = float(frame.pts * stream.time_base)
-                
-                # If we've reached/passed the requested target (with tolerance)
-                if frame_time + eps >= target_seconds:
-                    # Found it. Now process and return.
-                    frame_np = frame.to_ndarray(format='rgb24')
-                    if resize_dims:
-                        resized_frame = frame.reformat(width=resize_dims[0], height=resize_dims[1], format='rgb24')
-                        frame_np = resized_frame.to_ndarray(format='rgb24')
-                    
-                    return frame_np.transpose(2, 0, 1) # Transpose to CHW
-            
-            # If we get here, no frame >= target_seconds was found after seeking
-            # This means we've likely reached EOF
-            logging.warning(f"No frame found at or after {target_seconds:.2f}s (EOF reached)")
-            return None
-            
-    except (av.AVError, StopIteration) as e:
-        logging.error(f"Error extracting frame at {target_seconds:.2f}s: {e}")
-    
-    return None # Return None if the frame could not be extracted
+    start_time, out_path_chunks = 0., [],
+    try: 
+        video_duration_seconds = float(ffmpeg.probe(in_video_path)['streams'][0]['duration'])
+    except:
+        video_duration_seconds = 600.
 
+    for duration in intervals_seconds:
+        try:
+            out_path_chunk = out_path / f"{out_path.stem}_{start_time:.0f}_{start_time + duration:.0f}.mp4"
+            subprocess.run([
+                "ffmpeg",
+                "-y",
+                "-i", str(in_video_path),
+                "-ss", str(start_time),
+                "-t", str(start_time + duration),
+                "-vf", f"fps={downsampled_fps},scale=-2:{new_height}",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", str(crf),
+                "-an",  # Remove audio
+                str(out_path_chunk)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            start_time += duration
+            out_path_chunks.append(out_path_chunk)
+        except:
+            logging.info(f"Error processing chunk {start_time:.0f}_{start_time + duration:.0f} of {video_duration_seconds:.0f} seconds, could be out of range?")
+            break
 
-def sample_frames_from_bytes(
-    video_bytes: bytes,
-    strides_spec: dict[int, int]
-) -> dict[str, np.ndarray]:
-    """
-    Decodes an in-memory video and samples frames based on a given specification.
-    """
-    sampled_data = {}
-    
-    # --- Get video properties once from a temporary container ---
-    try:
-        with av.open(io.BytesIO(video_bytes)) as container:
-            stream = container.streams.video[0]
-            total_duration_seconds = stream.duration * stream.time_base
-            resize_dims = None
-            if stream.height > 360:
-                scale = 360 / stream.height
-                new_width = int(stream.width * scale)
-                resize_dims = (new_width, 360)
-    except av.AVError as e:
-        logging.error(f"Failed to open video to get initial properties: {e}")
-        return {f"stride-{s}_chw": np.array([]) for s in strides_spec}
-
-    # --- Loop through the user-defined strides ---
-    for stride_seconds, num_frames in strides_spec.items():
-        frames = []
-        key = f"stride-{stride_seconds}_chw"
-        
-        for i in range(num_frames):
-            target_time = (i + 1) * stride_seconds
-            
-            if target_time > total_duration_seconds:
-                logging.warning(f"Stopping stride {stride_seconds}s; target time {target_time:.2f}s is beyond video duration.")
-                break
-
-            # Use the robust helper function for each frame
-            frame_chw = _get_single_frame(video_bytes, target_time, resize_dims)
-            
-            if frame_chw is not None:
-                frames.append(frame_chw)
-            else:
-                # If we fail to get a frame, stop trying for this stride
-                logging.error(f"Failed to retrieve frame for stride {stride_seconds} at {target_time}s. Halting this stride.")
-                break
-
-        sampled_data[key] = np.stack(frames) if frames else np.array([])
-
-    return sampled_data
+    return out_path_chunks
 
 
 def main():
@@ -148,14 +73,9 @@ def main():
 
     # --- Define the desired strides and frame counts here ---
     # Key = stride in seconds, Value = number of frames to sample
-    strides_to_sample = {
-        3: 15,  # Sample 15 frames, 3 seconds apart
-        30: 15, # Sample 15 frames, 30 seconds apart
-        60: 5   # Sample 5 frames, 60 seconds apart
-    }
 
     # Run the frame sampling function with the new specification
-    sampled_frames = sample_frames_from_bytes(video_bytes, strides_to_sample)
+    sampled_frames = downsample_video_from_path(video_path, strides_to_sample)
 
     # Print the results to verify
     print("\n--- Frame Sampling Results ---")

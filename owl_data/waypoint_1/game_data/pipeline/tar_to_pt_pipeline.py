@@ -212,26 +212,38 @@ def run_extraction_pipeline(
 
 
 if __name__ == '__main__':
-    # Example usage
-    SOURCE_BUCKET = "game-data"
-    MANIFEST_BUCKET = "game-data-manifest"
-    
-    # Load task list
-    task_list_file = "task_list.txt"
-    if os.path.exists(task_list_file):
-        with open(task_list_file, 'r') as f:
-            tasks = [line.strip() for line in f if line.strip()]
-    
+    import argparse
 
-    
+    parser = argparse.ArgumentParser(description='TAR -> .pt extraction pipeline (multi-node)')
+    parser.add_argument('--source-bucket', type=str, default='game-data')
+    parser.add_argument('--manifest-bucket', type=str, default='game-data-manifest')
+    parser.add_argument('--task-list-path', type=str, default='task_list.txt')
+    parser.add_argument('--skip-existing', action='store_true', default=True, help='Skip TARs that already have .pt')
+    parser.add_argument('--node_rank', type=int, default=0, help='Rank of this node (0-indexed)')
+    parser.add_argument('--num_nodes', '--world-size', dest='num_nodes', type=int, default=1, help='Total number of nodes')
+    args = parser.parse_args()
+
+    # Load and shard tasks across nodes
+    tasks: list[str] = []
+    if os.path.exists(args.task_list_path):
+        with open(args.task_list_path, 'r') as f:
+            tasks = [line.strip() for line in f if line.strip()]
+
+    local_tasks = [t for i, t in enumerate(tasks) if i % args.num_nodes == args.node_rank]
+
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format=f'%(asctime)s - %(levelname)s - Node {args.node_rank}/{args.num_nodes} - %(message)s'
     )
-    
-    run_extraction_pipeline(
-        source_bucket=SOURCE_BUCKET,
-        manifest_bucket=MANIFEST_BUCKET,
-        master_task_list=tasks,
-        skip_existing=True
-    )
+
+    if not local_tasks:
+        logging.info(f'No tasks assigned to this node after sharding. Total tasks: {len(tasks)}')
+    else:
+        logging.info(f'Loaded {len(tasks)} tasks; this node will process {len(local_tasks)}')
+
+        run_extraction_pipeline(
+            source_bucket=args.source_bucket,
+            manifest_bucket=args.manifest_bucket,
+            master_task_list=local_tasks,
+            skip_existing=args.skip_existing,
+        )

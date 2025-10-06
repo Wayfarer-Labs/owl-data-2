@@ -240,7 +240,7 @@ if __name__ == '__main__':
     # prefix_filter = "2024/"
     
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     

@@ -221,13 +221,8 @@ if __name__ == '__main__':
     if os.path.exists(task_list_file):
         with open(task_list_file, 'r') as f:
             tasks = [line.strip() for line in f if line.strip()]
-    else:
-        # Fallback to a small test list
-        tasks = [
-            "example/video1.tar",
-            "example/video2.tar",
-        ]
-        logging.warning(f"Task list file {task_list_file} not found. Using test tasks.")
+    
+
     
     logging.basicConfig(
         level=logging.INFO,
@@ -239,4 +234,4 @@ if __name__ == '__main__':
         manifest_bucket=MANIFEST_BUCKET,
         master_task_list=tasks,
         skip_existing=True
-    ) 
+    )

@@ -73,12 +73,14 @@ def extraction_downloader_task(
 def extraction_processor_task(
     buffer_queue: queue.Queue,
     manifest_bucket: str,
-    s3_client: S3Client
+    s3_client: S3Client,
+    local_extracted_data_dir: str,
 ):
     """
     Consumer: Extracts data from TAR files and uploads downsampled TARs.
     """
     GameDataClient.set_extracted_data_bucket(manifest_bucket)
+    GameDataClient.set_local_extracted_data_dir(local_extracted_data_dir)
     GameDataClient.set_s3_client(s3_client)
     while True:
         s3_key, tar_bytes = buffer_queue.get()
@@ -94,7 +96,8 @@ def extraction_processor_task(
             logging.info(f"Uploading downsampled tar for {s3_key} to {manifest_bucket}")
             GameDataClient.upload_extracted_data_to_s3(tmp_tar_path, s3_key)
             logging.info(f"Successfully processed {s3_key} -> s3://{manifest_bucket}/{s3_key}")
-
+            GameDataClient.move_extracted_data_to_local_dir(tmp_tar_path)
+            logging.info(f"Moved {tmp_tar_path} to {local_extracted_data_dir}")
         except Exception as e:
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)
         finally:
@@ -107,7 +110,8 @@ def run_extraction_pipeline(
     source_bucket: str,
     manifest_bucket: str,
     master_task_list: List[str],
-    skip_existing: bool = True
+    skip_existing: bool = True,
+    local_extracted_data_dir: str = '/mnt/data/datasets/downsampled_tars',
 ):
     """
     Runs the extraction pipeline to convert TAR files to .pt files.
@@ -174,7 +178,7 @@ def run_extraction_pipeline(
     for i in range(NUM_PROCESSORS):
         processor = threading.Thread(
             target=extraction_processor_task,
-            args=(buffer_queue, manifest_bucket, s3_client),
+            args=(buffer_queue, manifest_bucket, s3_client, local_extracted_data_dir),
             name=f"ExtractionProcessor-{i+1}"
         )
         threads.append(processor)
@@ -205,6 +209,7 @@ if __name__ == '__main__':
     parser.add_argument('--manifest-bucket', type=str, default='game-data-downsampled')
     parser.add_argument('--task-list-path', type=str, default='task_list.txt')
     parser.add_argument('--num_nodes', '--world-size', dest='num_nodes', type=int, default=1, help='Total number of nodes')
+    parser.add_argument('--local-extracted-data-dir', type=str, default='/mnt/data/datasets/downsampled_tars')
     args = parser.parse_args()
 
     # Load and shard tasks across nodes
@@ -230,4 +235,5 @@ if __name__ == '__main__':
             manifest_bucket=args.manifest_bucket,
             master_task_list=local_tasks,
             skip_existing=args.skip_existing,
+            local_extracted_data_dir=args.local_extracted_data_dir,
         )

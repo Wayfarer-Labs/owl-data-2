@@ -20,8 +20,9 @@ class DownsampledTAR_Data:
 
 class GameDataClient:
 
-    _extracted_data_bucket = 'todo'
-    _raw_data_bucket = 'todo'
+    _extracted_data_bucket = 'todo' # game-data-manifest
+    _raw_data_bucket = 'todo' # game-data
+    _local_extracted_data_dir = 'todo' # /mnt/data/datasets/downsampled_tars 
     _s3_client: S3ClientType = boto3.client('s3')
     
     @classmethod
@@ -35,6 +36,11 @@ class GameDataClient:
     @classmethod
     def set_extracted_data_bucket(cls, dst_bucket: str) -> None:
         cls._extracted_data_bucket = dst_bucket
+
+    @classmethod
+    def set_local_extracted_data_dir(cls, local_dir: str) -> None:
+        cls._local_extracted_data_dir = local_dir
+
 
     @staticmethod
     def downsample_raw_data_to_tmp(
@@ -151,7 +157,7 @@ class GameDataClient:
         src_tar_path: pathlib.Path,
         s3_key: str,
         *,
-        cleanup_tmp: bool = True
+        cleanup_tmp: bool = False
     ) -> None:
         _extracted_data_bucket, _s3_client = cls._extracted_data_bucket, cls._s3_client
 
@@ -179,6 +185,20 @@ class GameDataClient:
                 except Exception as e:
                     logging.warning(f"Failed to remove tmp file {src_tar_path}: {e}")
 
+    @classmethod
+    def move_extracted_data_to_local_dir(
+        cls,
+        src_tar_path: pathlib.Path,
+    ) -> None:
+        import shutil
+        dst_dir = cls._local_extracted_data_dir
+        if not src_tar_path or not pathlib.Path(src_tar_path).exists():
+            raise FileNotFoundError(f"Source TAR not found: {src_tar_path}")
+        
+        dst_dir = pathlib.Path(src_tar_path).parent
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(src_tar_path, dst_dir)
+        logging.info(f"Moved {src_tar_path} to {dst_dir}")
 
     @classmethod
     def download_raw_data_from_s3(

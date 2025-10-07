@@ -194,16 +194,17 @@ class GameDataClient:
         if not src_tar_path or not pathlib.Path(src_tar_path).exists():
             raise FileNotFoundError(f"Source TAR not found: {src_tar_path}")
         
-        dst_dir = pathlib.Path(src_tar_path).parent
-        
+        dst_dir = pathlib.Path(dst_dir)
+
         if dst_dir.exists():
             logging.info(f"Removing existing directory {dst_dir}")
             shutil.rmtree(dst_dir)
 
         dst_dir.mkdir(parents=True, exist_ok=True)
         
-        shutil.move(src_tar_path, dst_dir)
-        logging.info(f"Moved {src_tar_path} to {dst_dir}")
+        tar_name = '.'.join(src_tar_path.name.split('.')[-2:])
+        shutil.move(src_tar_path, dst_dir / tar_name)
+        logging.info(f"Moved {src_tar_path} to {dst_dir / tar_name}")
 
 
     @classmethod

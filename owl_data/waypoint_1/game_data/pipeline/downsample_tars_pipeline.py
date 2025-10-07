@@ -111,6 +111,7 @@ def run_extraction_pipeline(
     manifest_bucket: str,
     master_task_list: List[str],
     skip_existing: bool = True,
+    num_processors: int = (os.cpu_count() // 4) or 4,
     local_extracted_data_dir: str = '/mnt/data/datasets/downsampled_tars',
 ):
     """
@@ -121,10 +122,11 @@ def run_extraction_pipeline(
         manifest_bucket: Name of the manifest bucket for .pt files (e.g., "game-data-manifest")
         master_task_list: List of TAR S3 keys to process
         skip_existing: If True, skip TAR files that already have corresponding .pt files
+        num_processors: Number of processors to use
+        local_extracted_data_dir: Directory to store downsampled TARs
     """
     # --- 1. Configuration and Initialization ---
-    NUM_PROCESSORS = (os.cpu_count() // 4) or 4
-    BUFFER_QUEUE_SIZE = NUM_PROCESSORS * 2
+    BUFFER_QUEUE_SIZE = num_processors * 2
     
     s3_client = boto3.client(
         's3',
@@ -208,8 +210,12 @@ if __name__ == '__main__':
     parser.add_argument('--source-bucket', type=str, default='game-data')
     parser.add_argument('--manifest-bucket', type=str, default='game-data-downsampled')
     parser.add_argument('--task-list-path', type=str, default='task_list.txt')
+    parser.add_argument('--node_rank', type=int, default=0)
+    parser.add_argument('--num-processors', type=int, default=(os.cpu_count() // 4) or 4)
+    parser.add_argument('--skip-existing', action='store_true', default=False)
     parser.add_argument('--num_nodes', '--world-size', dest='num_nodes', type=int, default=1, help='Total number of nodes')
     parser.add_argument('--local-extracted-data-dir', type=str, default='/mnt/data/datasets/downsampled_tars')
+    
     args = parser.parse_args()
 
     # Load and shard tasks across nodes
@@ -235,5 +241,6 @@ if __name__ == '__main__':
             manifest_bucket=args.manifest_bucket,
             master_task_list=local_tasks,
             skip_existing=args.skip_existing,
+            num_processors=args.num_processors,
             local_extracted_data_dir=args.local_extracted_data_dir,
         )

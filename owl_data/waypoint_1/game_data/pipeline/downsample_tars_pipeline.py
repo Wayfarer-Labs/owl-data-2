@@ -211,7 +211,7 @@ if __name__ == '__main__':
     parser.add_argument('--manifest-bucket', type=str, default='game-data-downsampled')
     parser.add_argument('--task-list-path', type=str, default='task_list.txt')
     parser.add_argument('--node_rank', type=int, default=0)
-    parser.add_argument('--num-processors', type=int, default=(os.cpu_count() // 4) or 4)
+    parser.add_argument('--num-processors', type=int, default=(os.cpu_count() // 2) or 4)
     parser.add_argument('--skip-existing', action='store_true', default=False)
     parser.add_argument('--num_nodes', '--world-size', dest='num_nodes', type=int, default=1, help='Total number of nodes')
     parser.add_argument('--local-extracted-data-dir', type=str, default='/mnt/data/datasets/downsampled_tars')

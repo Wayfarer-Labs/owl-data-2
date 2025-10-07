@@ -18,7 +18,7 @@ class DownsampledTAR_Data:
     out_video_metadata: list[dict]
 
 
-class ExtractedData:
+class GameDataClient:
 
     _extracted_data_bucket = 'todo'
     _raw_data_bucket = 'todo'
@@ -205,7 +205,7 @@ class ExtractedData:
         cls,
         key: str,
         dst_tar_path: pathlib.Path,
-    ) -> tuple[ExtractedData, pathlib.Path]:
+    ) -> tuple[GameDataClient, pathlib.Path]:
         _extracted_data_bucket, _s3_client = cls._extracted_data_bucket, cls._s3_client
 
         dst_tar_path = pathlib.Path(dst_tar_path)
@@ -223,7 +223,7 @@ class ExtractedData:
                     f.write(chunk)
 
             # Minimal placeholder; contents can be populated by a later load/parsing step if needed
-            data = ExtractedData(
+            data = GameDataClient(
                 s3_key=key,
                 downsampled_video_bytes=[],
                 controls_csv_str="",
@@ -333,7 +333,7 @@ class ExtractedData:
     def read_downsampled_tar_path(tar_path: pathlib.Path, s3_key: str) -> DownsampledTAR_Data:
         with open(tar_path, 'rb') as f:
             buf = io.BytesIO(f.read())
-        return ExtractedData.read_downsampled_tar_bytes(buf, s3_key)
+        return GameDataClient.read_downsampled_tar_bytes(buf, s3_key)
 
 
 if __name__ == "__main__":
@@ -357,24 +357,24 @@ if __name__ == "__main__":
         endpoint_url=os.getenv('AWS_ENDPOINT_URL_S3'),
         region_name=os.getenv('AWS_REGION')
     )
-    ExtractedData.set_s3_client(s3_client)
-    ExtractedData.set_raw_data_bucket(RAW_BUCKET)
-    ExtractedData.set_extracted_data_bucket(DS_BUCKET)
+    GameDataClient.set_s3_client(s3_client)
+    GameDataClient.set_raw_data_bucket(RAW_BUCKET)
+    GameDataClient.set_extracted_data_bucket(DS_BUCKET)
 
-    mismatches = ExtractedData.get_tar_mismatches_in_buckets()
+    mismatches = GameDataClient.get_tar_mismatches_in_buckets()
 
     tmp_download_path: pathlib.Path | None = None
 
     try:
-        tar_bytes, size = ExtractedData.download_raw_data_from_s3(raw_tar_name)
+        tar_bytes, size = GameDataClient.download_raw_data_from_s3(raw_tar_name)
         if tar_bytes is None:
             logging.error(f"Raw TAR unavailable: {raw_tar_name} size={size}")
             raise SystemExit(1)
 
-        tmp_ds_tar_path = ExtractedData.downsample_raw_data_to_tmp(io.BytesIO(tar_bytes))
+        tmp_ds_tar_path = GameDataClient.downsample_raw_data_to_tmp(io.BytesIO(tar_bytes))
         logging.info(f"Downsampled tar at: {tmp_ds_tar_path}")
 
-        ExtractedData.upload_extracted_data_to_s3(tmp_ds_tar_path, raw_tar_name, cleanup_tmp=True)
+        GameDataClient.upload_extracted_data_to_s3(tmp_ds_tar_path, raw_tar_name, cleanup_tmp=True)
         logging.info(f"Uploaded downsampled TAR to s3://{DS_BUCKET}/{raw_tar_name}")
 
         # Download it back to verify
@@ -384,7 +384,7 @@ if __name__ == "__main__":
         s3_client.download_file(DS_BUCKET, raw_tar_name, str(tmp_download_path))
         logging.info(f"Downloaded back to {tmp_download_path}")
 
-        ds = ExtractedData.read_downsampled_tar_path(tmp_download_path, raw_tar_name)
+        ds = GameDataClient.read_downsampled_tar_path(tmp_download_path, raw_tar_name)
         logging.info(
             f"Parsed downsampled TAR: chunks={len(ds.downsampled_video_bytes)}, "
             f"csv_len={len(ds.controls_csv_str)}, "

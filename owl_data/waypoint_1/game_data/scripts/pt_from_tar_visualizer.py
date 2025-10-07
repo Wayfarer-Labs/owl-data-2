@@ -34,7 +34,7 @@ from owl_data.waypoint_1.game_data.utils.s3_utils import (
     download_extracted_data_from_s3, 
     list_pt_files_in_bucket
 )
-from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.owl_types import GameDataClient
 
 load_dotenv()
 
@@ -86,7 +86,7 @@ def chw_to_hwc(frame_chw: np.ndarray) -> np.ndarray:
 
 
 def create_frame_grid_visualization(
-    extracted_data: ExtractedData,
+    extracted_data: GameDataClient,
     output_path: str,
     max_frames_per_row: int = 8
 ) -> str:
@@ -230,7 +230,7 @@ def create_frame_grid_visualization(
 
 
 def create_summary_visualization(
-    extracted_data: ExtractedData,
+    extracted_data: GameDataClient,
     output_path: str
 ) -> str:
     """

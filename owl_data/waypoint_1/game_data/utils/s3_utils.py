@@ -6,7 +6,7 @@ import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
-from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.owl_types import GameDataClient
 from owl_data.waypoint_1.game_data.utils.pt_utils import (
     save_extracted_data_to_pt, 
     load_extracted_data_from_pt,
@@ -17,7 +17,7 @@ load_dotenv()
 
 
 def upload_extracted_data_to_s3(
-    extracted_data: ExtractedData,
+    extracted_data: GameDataClient,
     s3_client,
     manifest_bucket: str,
     original_s3_key: str
@@ -70,7 +70,7 @@ def download_extracted_data_from_s3(
     s3_client,
     manifest_bucket: str,
     pt_s3_key: str
-) -> ExtractedData:
+) -> GameDataClient:
     """
     Downloads and loads an ExtractedData object from S3.
     

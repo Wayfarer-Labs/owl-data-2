@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 
-from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.owl_types import GameDataClient
 from owl_data.waypoint_1.game_data.constants import MENU_THRESHOLD
 
 @cache
@@ -16,7 +16,7 @@ def get_commit_hash() -> str:
 
 def create_manifest_record(
     s3_key: str, 
-    extracted_data: ExtractedData = None, 
+    extracted_data: GameDataClient = None, 
     quality_flags: dict = None,
     error: Exception = None
 ) -> dict:

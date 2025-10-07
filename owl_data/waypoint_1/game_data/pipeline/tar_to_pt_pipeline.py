@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
 
-from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.owl_types import GameDataClient
 S3Client = type(boto3.client('s3'))
 
 load_dotenv()
@@ -39,8 +39,8 @@ def extraction_downloader_task(
     Similar to the original downloader but for the extraction pipeline.
     """
     
-    ExtractedData.set_raw_data_bucket(bucket_name)
-    ExtractedData.set_s3_client(s3_client)
+    GameDataClient.set_raw_data_bucket(bucket_name)
+    GameDataClient.set_s3_client(s3_client)
 
     while True:
         s3_key = master_queue.get()
@@ -54,7 +54,7 @@ def extraction_downloader_task(
             break
 
         try:
-            tar_bytes, size = ExtractedData.download_raw_data_from_s3(s3_key)
+            tar_bytes, size = GameDataClient.download_raw_data_from_s3(s3_key)
             
             if tar_bytes is None:
                 logging.info(f"'{s3_key}' skipped with {size=}")
@@ -78,8 +78,8 @@ def extraction_processor_task(
     """
     Consumer: Extracts data from TAR files and uploads downsampled TARs.
     """
-    ExtractedData.set_extracted_data_bucket(manifest_bucket)
-    ExtractedData.set_s3_client(s3_client)
+    GameDataClient.set_extracted_data_bucket(manifest_bucket)
+    GameDataClient.set_s3_client(s3_client)
     while True:
         s3_key, tar_bytes = buffer_queue.get()
 
@@ -90,9 +90,9 @@ def extraction_processor_task(
 
         try:
             logging.info(f"Building downsampled tar for {s3_key}")
-            tmp_tar_path = ExtractedData.downsample_raw_data_to_tmp(tar_bytes)
+            tmp_tar_path = GameDataClient.downsample_raw_data_to_tmp(tar_bytes)
             logging.info(f"Uploading downsampled tar for {s3_key} to {manifest_bucket}")
-            ExtractedData.upload_extracted_data_to_s3(tmp_tar_path, s3_key)
+            GameDataClient.upload_extracted_data_to_s3(tmp_tar_path, s3_key)
             logging.info(f"Successfully processed {s3_key} -> s3://{manifest_bucket}/{s3_key}")
 
         except Exception as e:
@@ -133,7 +133,7 @@ def run_extraction_pipeline(
     # --- 2. Filter out already processed files if requested ---
     if skip_existing:
         logging.info("Checking for existing downsampled TARs to skip...")
-        tasks_to_process = ExtractedData.get_tar_mismatches_in_buckets(
+        tasks_to_process = GameDataClient.get_tar_mismatches_in_buckets(
             s3_client=s3_client,
             bucket=manifest_bucket,
             object_keys=master_task_list)

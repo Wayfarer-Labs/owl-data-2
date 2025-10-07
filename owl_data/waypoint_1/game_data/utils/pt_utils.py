@@ -4,10 +4,10 @@ import logging
 from typing import Optional
 from pathlib import Path
 
-from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.owl_types import GameDataClient
 
 
-def serialize_extracted_data(data: ExtractedData) -> dict:
+def serialize_extracted_data(data: GameDataClient) -> dict:
     """
     Serializes an ExtractedData object into a dictionary suitable for saving with torch.save.
     
@@ -29,7 +29,7 @@ def serialize_extracted_data(data: ExtractedData) -> dict:
     }
 
 
-def deserialize_extracted_data(serialized_dict: dict) -> ExtractedData:
+def deserialize_extracted_data(serialized_dict: dict) -> GameDataClient:
     """
     Deserializes a dictionary back into an ExtractedData object.
     
@@ -43,7 +43,7 @@ def deserialize_extracted_data(serialized_dict: dict) -> ExtractedData:
     if serialized_dict.get('_data_type') != 'ExtractedData':
         raise ValueError(f"Invalid data type: {serialized_dict.get('_data_type')}")
     
-    return ExtractedData(
+    return GameDataClient(
         s3_key=serialized_dict['s3_key'],
         video_id=serialized_dict['video_id'],
         video_metadata=serialized_dict['video_metadata'],
@@ -52,7 +52,7 @@ def deserialize_extracted_data(serialized_dict: dict) -> ExtractedData:
     )
 
 
-def save_extracted_data_to_pt(data: ExtractedData, pt_path: str) -> None:
+def save_extracted_data_to_pt(data: GameDataClient, pt_path: str) -> None:
     """
     Saves an ExtractedData object to a .pt file.
     
@@ -73,7 +73,7 @@ def save_extracted_data_to_pt(data: ExtractedData, pt_path: str) -> None:
         raise
 
 
-def load_extracted_data_from_pt(pt_path: str) -> ExtractedData:
+def load_extracted_data_from_pt(pt_path: str) -> GameDataClient:
     """
     Loads an ExtractedData object from a .pt file.
     

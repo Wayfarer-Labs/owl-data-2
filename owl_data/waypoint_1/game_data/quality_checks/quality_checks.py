@@ -6,13 +6,13 @@ import logging
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from owl_data.waypoint_1.game_data.owl_types import ExtractedData
+from owl_data.waypoint_1.game_data.owl_types import GameDataClient
 from owl_data.waypoint_1.game_data.constants import MENU_THRESHOLD
 from owl_data.waypoint_1.game_data.quality_checks.vlm import _encode_frame, _classify_single_frame
 
 
 
-def check_darkness(data: ExtractedData, threshold: float = 15.0) -> bool:
+def check_darkness(data: GameDataClient, threshold: float = 15.0) -> bool:
     """Checks if the video is excessively dark."""
     # Use the frames with a long stride to get a diverse sample
     frames = data.sampled_frames["stride-30_chw"]
@@ -20,7 +20,7 @@ def check_darkness(data: ExtractedData, threshold: float = 15.0) -> bool:
     logging.info(f"'{data.s3_key}' brightness check: {avg_brightness:.2f}")
     return bool(avg_brightness < threshold)
 
-def check_dpi_scaling(data: ExtractedData, border_ratio: float = 0.1) -> bool:
+def check_dpi_scaling(data: GameDataClient, border_ratio: float = 0.1) -> bool:
     """Checks for large black borders indicating a DPI scaling issue."""
     # Just need one representative frame
     frame = data.sampled_frames["stride-3_chw"][0] # C, H, W
@@ -101,7 +101,7 @@ def check_for_menus(data) -> dict:
     }
 
 
-def _run_all_quality_checks(data: ExtractedData) -> dict:
+def _run_all_quality_checks(data: GameDataClient) -> dict:
     """
     Runs all quality checks on the extracted data and returns the results as a dictionary.
     

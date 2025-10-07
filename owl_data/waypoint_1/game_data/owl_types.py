@@ -6,9 +6,6 @@ from owl_data.waypoint_1.game_data.constants import MAX_FILE_SIZE_BYTES
 
 
 S3ClientType = type(boto3.client('s3'))
-_s3_client: S3ClientType = boto3.client('s3')
-_raw_data_bucket: str = 'todo'
-_extracted_data_bucket: str = 'todo'
 
 
 @dataclass 
@@ -22,20 +19,22 @@ class DownsampledTAR_Data:
 
 
 class ExtractedData:
-    @staticmethod
-    def set_s3_client(s3_client: S3ClientType) -> None:
-        global _s3_client
-        _s3_client = s3_client
 
-    @staticmethod
-    def set_raw_data_bucket(src_bucket: str) -> None:
-        global _download_bucket
-        _download_bucket = src_bucket
+    _extracted_data_bucket = 'todo'
+    _raw_data_bucket = 'todo'
+    _s3_client: S3ClientType = boto3.client('s3')
+    
+    @classmethod
+    def set_s3_client(cls, s3_client: S3ClientType) -> None:
+        cls._s3_client = s3_client
 
-    @staticmethod
-    def set_extracted_data_bucket(dst_bucket: str) -> None:
-        global _extracted_data_bucket
-        _extracted_data_bucket = dst_bucket
+    @classmethod
+    def set_raw_data_bucket(cls, src_bucket: str) -> None:
+        cls._raw_data_bucket = src_bucket
+
+    @classmethod
+    def set_extracted_data_bucket(cls, dst_bucket: str) -> None:
+        cls._extracted_data_bucket = dst_bucket
 
     @staticmethod
     def downsample_raw_data_to_tmp(
@@ -146,14 +145,15 @@ class ExtractedData:
                 _shutil.rmtree(work_dir, ignore_errors=True)
 
 
-    @staticmethod
+    @classmethod
     def upload_extracted_data_to_s3(
+        cls,
         src_tar_path: pathlib.Path,
         s3_key: str,
         *,
         cleanup_tmp: bool = True
     ) -> None:
-        global _extracted_data_bucket, _s3_client
+        _extracted_data_bucket, _s3_client = cls._extracted_data_bucket, cls._s3_client
 
         if not src_tar_path or not pathlib.Path(src_tar_path).exists():
             raise FileNotFoundError(f"Source TAR not found: {src_tar_path}")
@@ -180,13 +180,14 @@ class ExtractedData:
                     logging.warning(f"Failed to remove tmp file {src_tar_path}: {e}")
 
 
-    @staticmethod
+    @classmethod
     def download_raw_data_from_s3(
+        cls,
         s3_key: str,
         max_file_size_bytes: int = MAX_FILE_SIZE_BYTES
     ) -> tuple[io.BytesIO | None, int]:
-        global _download_bucket, _s3_client
-        meta = _s3_client.head_object(Bucket=_download_bucket, Key=s3_key)
+        _raw_data_bucket, _s3_client = cls._raw_data_bucket, cls._s3_client
+        meta = _s3_client.head_object(Bucket=_raw_data_bucket, Key=s3_key)
         size = meta['ContentLength']
 
         if size > max_file_size_bytes or size == 0:
@@ -194,17 +195,18 @@ class ExtractedData:
             return None, size
 
         logging.info(f"Downloading {s3_key} ({size / 1e6:.2f} MB)...")
-        response = _s3_client.get_object(Bucket=_download_bucket, Key=s3_key)
+        response = _s3_client.get_object(Bucket=_raw_data_bucket, Key=s3_key)
         tar_bytes = response['Body'].read()
         return tar_bytes, size
 
 
-    @staticmethod
+    @classmethod
     def download_extracted_data_from_s3(
+        cls,
         key: str,
         dst_tar_path: pathlib.Path,
     ) -> tuple[ExtractedData, pathlib.Path]:
-        global _extracted_data_bucket, _s3_client
+        _extracted_data_bucket, _s3_client = cls._extracted_data_bucket, cls._s3_client
 
         dst_tar_path = pathlib.Path(dst_tar_path)
         dst_tar_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,9 +237,32 @@ class ExtractedData:
             logging.error(f"Failed to download s3://{bucket}/{key}: {e}", exc_info=True)
             raise
 
-    @staticmethod
-    def get_tar_mismatches_in_buckets() -> list[str]:
-        pass
+    @classmethod
+    def get_tar_mismatches_in_buckets(cls) -> list[str]:
+        _s3_client = cls._s3_client
+        _extracted_data_bucket = cls._extracted_data_bucket
+        _raw_data_bucket = cls._raw_data_bucket
+
+        def _list_tar_keys(bucket: str) -> set[str]:
+            keys: set[str] = set()
+            try:
+                paginator = _s3_client.get_paginator('list_objects_v2')
+                for page in paginator.paginate(Bucket=bucket):
+                    for obj in (page.get('Contents') or []):
+                        key = obj.get('Key')
+                        if key and key.lower().endswith('.tar'):
+                            keys.add(key)
+            except Exception as e:
+                logging.error(f"Failed to list .tar keys in bucket {bucket}: {e}", exc_info=True)
+                raise
+            return keys
+
+        raw_keys = _list_tar_keys(_raw_data_bucket)
+        manifest_keys = _list_tar_keys(_extracted_data_bucket)
+
+        missing = sorted(k for k in raw_keys if k not in manifest_keys)
+        logging.info(f"Found {len(missing)} raw .tar keys missing from s3://{_raw_data_bucket}")
+        return missing
 
     @staticmethod
     def read_downsampled_tar_bytes(tar: io.BytesIO, s3_key: str) -> DownsampledTAR_Data:
@@ -312,5 +337,65 @@ class ExtractedData:
 
 
 if __name__ == "__main__":
-    raw_tar_name = '003392b7230e411a.tar'
+    import os, io, tempfile, pathlib
+    from dotenv import load_dotenv
+    import boto3
+
+    load_dotenv()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    RAW_BUCKET = 'game-data'
+    DS_BUCKET = 'game-data-manifest'
+
     
+    raw_tar_name = '003392b7230e411a.tar'
+
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+        endpoint_url=os.getenv('AWS_ENDPOINT_URL_S3'),
+        region_name=os.getenv('AWS_REGION')
+    )
+    ExtractedData.set_s3_client(s3_client)
+    ExtractedData.set_raw_data_bucket(RAW_BUCKET)
+    ExtractedData.set_extracted_data_bucket(DS_BUCKET)
+
+    mismatches = ExtractedData.get_tar_mismatches_in_buckets()
+
+    tmp_download_path: pathlib.Path | None = None
+
+    try:
+        tar_bytes, size = ExtractedData.download_raw_data_from_s3(raw_tar_name)
+        if tar_bytes is None:
+            logging.error(f"Raw TAR unavailable: {raw_tar_name} size={size}")
+            raise SystemExit(1)
+
+        tmp_ds_tar_path = ExtractedData.downsample_raw_data_to_tmp(io.BytesIO(tar_bytes))
+        logging.info(f"Downsampled tar at: {tmp_ds_tar_path}")
+
+        ExtractedData.upload_extracted_data_to_s3(tmp_ds_tar_path, raw_tar_name, cleanup_tmp=True)
+        logging.info(f"Uploaded downsampled TAR to s3://{DS_BUCKET}/{raw_tar_name}")
+
+        # Download it back to verify
+        fd, _tmp = tempfile.mkstemp(prefix='dl_downsampled_', suffix='.tar')
+        os.close(fd)
+        tmp_download_path = pathlib.Path(_tmp)
+        s3_client.download_file(DS_BUCKET, raw_tar_name, str(tmp_download_path))
+        logging.info(f"Downloaded back to {tmp_download_path}")
+
+        ds = ExtractedData.read_downsampled_tar_path(tmp_download_path, raw_tar_name)
+        logging.info(
+            f"Parsed downsampled TAR: chunks={len(ds.downsampled_video_bytes)}, "
+            f"csv_len={len(ds.controls_csv_str)}, "
+            f"in_meta_keys={list(ds.in_video_metadata.keys())[:5]}, "
+            f"out_meta_count={len(ds.out_video_metadata)}"
+        )
+    except Exception as e:
+        logging.error(f"Test run failed: {e}", exc_info=True)
+    finally:
+        if tmp_download_path:
+            try:
+                os.unlink(tmp_download_path)
+            except Exception:
+                pass

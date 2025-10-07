@@ -190,15 +190,9 @@ class GameDataClient:
         src_tar_path: pathlib.Path,
     ) -> None:
         import shutil
-        dst_dir = cls._local_extracted_data_dir
+        dst_dir = pathlib.Path(cls._local_extracted_data_dir)
         if not src_tar_path or not pathlib.Path(src_tar_path).exists():
             raise FileNotFoundError(f"Source TAR not found: {src_tar_path}")
-        
-        dst_dir = pathlib.Path(dst_dir)
-
-        if dst_dir.exists():
-            logging.info(f"Removing existing directory {dst_dir}")
-            shutil.rmtree(dst_dir)
 
         dst_dir.mkdir(parents=True, exist_ok=True)
         

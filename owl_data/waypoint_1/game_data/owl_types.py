@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict
-import os, io, pathlib, boto3, logging
+import os, io, pathlib, boto3, logging, time
 from dataclasses import dataclass
 from owl_data.waypoint_1.game_data.constants import MAX_FILE_SIZE_BYTES
 
@@ -44,7 +44,7 @@ class GameDataClient:
 
     @staticmethod
     def downsample_raw_data_to_tmp(
-        raw_tar_bytes: io.BytesIO
+        raw_tar_bytes: bytes
     ) -> pathlib.Path:
         # takes a src tar, iterates over data from it, saves extracted data to dst_tar_path
         # extracts tar into tmp dir
@@ -54,7 +54,6 @@ class GameDataClient:
         and returns the local path to the new TAR.
         """
         import tempfile, tarfile, shutil
-        raw_tar_bytes.seek(0)
 
         work_dir = pathlib.Path(tempfile.mkdtemp(prefix="owl_downsample_"))
         extracted_dir = work_dir / "extracted"
@@ -66,7 +65,7 @@ class GameDataClient:
 
         try:
             # 1) Extract original tar to temp (safe)
-            with tarfile.open(fileobj=raw_tar_bytes, mode='r') as tar:
+            with tarfile.open(fileobj=io.BytesIO(raw_tar_bytes), mode='r') as tar:
                 tar.extractall(path=extracted_dir, filter='data')
 
             # 2) Find mp4, csv, json paths:
@@ -108,7 +107,7 @@ class GameDataClient:
             all_paths = [csv_path, json_path, in_video_metadata_path, *downsampled_paths]
 
             # 4) Create a new tar containing ONLY the downsampled mp4 chunks
-            tmp_tar = tempfile.NamedTemporaryFile(prefix="downsampled_", suffix=".tar", delete=False)
+            tmp_tar = tempfile.NamedTemporaryFile(prefix="downsampled_"+str(time.time()), suffix=".tar", delete=False)
             tmp_tar_path = pathlib.Path(tmp_tar.name)
             tmp_tar.close()
             with tarfile.open(tmp_tar_path, mode="w") as out_tar:
@@ -196,9 +195,16 @@ class GameDataClient:
             raise FileNotFoundError(f"Source TAR not found: {src_tar_path}")
         
         dst_dir = pathlib.Path(src_tar_path).parent
+        
+        if dst_dir.exists():
+            logging.info(f"Removing existing directory {dst_dir}")
+            shutil.rmtree(dst_dir)
+
         dst_dir.mkdir(parents=True, exist_ok=True)
+        
         shutil.move(src_tar_path, dst_dir)
         logging.info(f"Moved {src_tar_path} to {dst_dir}")
+
 
     @classmethod
     def download_raw_data_from_s3(

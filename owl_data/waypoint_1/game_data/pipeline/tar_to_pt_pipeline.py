@@ -134,7 +134,7 @@ def run_extraction_pipeline(
         skip_existing: If True, skip TAR files that already have corresponding .pt files
     """
     # --- 1. Configuration and Initialization ---
-    NUM_PROCESSORS = os.cpu_count() or 4
+    NUM_PROCESSORS = (os.cpu_count() // 4) or 4
     BUFFER_QUEUE_SIZE = NUM_PROCESSORS * 2
     
     s3_client = boto3.client(

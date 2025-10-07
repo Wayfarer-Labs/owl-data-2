@@ -1,6 +1,10 @@
+
+
+
 uv venv venv --python 3.13
 source venv/bin/activate
 uv pip install -r requirements.txt
+uv pip install awscli
 git checkout sami-dev
 
 source .env
@@ -31,3 +35,13 @@ cat ~/.ssh/id_rsa.pub
 
 git config --global user.email "samibghanem@gmail.com"
 git config --global user.name "Sami"
+
+
+# download test tar
+
+aws s3 cp s3://game-data/fffde483e5634411.tar .
+mkdir test_tar 
+mv fffde483e5634411.tar test_tar/
+cd test_tar
+tar -xf fffde483e5634411.tar
+cd ..

@@ -1,8 +1,8 @@
-import os, gc, io, json, tarfile, logging, ffmpeg, boto3, traceback
-from collections import defaultdict
+import os, io, json, tarfile, logging, ffmpeg, boto3, traceback, tempfile, pathlib
 
 from owl_data.waypoint_1.game_data.owl_types import ExtractedData
-from owl_data.waypoint_1.game_data.utils.mp4_utils import sample_frames_from_bytes
+from owl_data.waypoint_1.game_data.utils.mp4_utils import downsample_video_from_path
+
 
 def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedData:
     """Processes a TAR file containing one video with descriptively named files."""
@@ -21,74 +21,69 @@ def _process_single_video_tar(tar: tarfile.TarFile, s3_key: str) -> ExtractedDat
         raise Exception(f"Skipping single-video TAR '{s3_key}': missing mp4={'mp4' in files} or metadata.json={'json' in files}.")
     
     try:
-        video_bytes = files['mp4']
-        # -- save a tmp mp4
-        tmp_dir = "/tmp"
-        tmp_mp4_path = os.path.join(tmp_dir, s3_key, os.path.basename(files['video_name']))
-        os.makedirs(os.path.dirname(tmp_mp4_path), exist_ok=True)
-        with open(tmp_mp4_path, 'wb') as f:
-            f.write(video_bytes)
-
-        video_id = os.path.splitext(os.path.basename(files['video_name']))[0]
         session_metadata = json.loads(files['json'])
-        video_metadata = ffmpeg.probe(tmp_mp4_path)
-        
-        strides_spec = {3: 15, 30: 15, 60: 5}
-        sampled_frames = sample_frames_from_bytes(video_bytes, strides_spec)
-        
-        del video_bytes
-        gc.collect()
 
-        return ExtractedData(
+        with tempfile.TemporaryDirectory(prefix="owl_tar_extract_") as tmpdir:
+            # Extract full TAR contents to temp directory
+            tar.extractall(path=tmpdir)
+
+            # Resolve mp4 path inside the extracted dir
+            mp4_rel = files.get('video_name')
+            mp4_path = pathlib.Path(tmpdir) / mp4_rel if mp4_rel else None
+            if not mp4_path or not mp4_path.exists():
+                # Fallback: find the first .mp4 in extracted tree
+                for root, _, fnames in os.walk(tmpdir):
+                    for fn in fnames:
+                        if fn.lower().endswith(".mp4"):
+                            mp4_path = pathlib.Path(root) / fn
+                            break
+                    if mp4_path and mp4_path.exists():
+                        break
+            if not mp4_path or not mp4_path.exists():
+                raise FileNotFoundError(f"Extracted mp4 not found in TAR '{s3_key}'")
+
+            # Probe original video via file path
+            video_metadata = ffmpeg.probe(str(mp4_path))
+
+            # Downsample from extracted path
+            downsampled_paths = downsample_video_from_path(mp4_path)
+
+            # Read downsampled files as bytes and probe from bytes (keeps current behavior)
+            downsampled_video_bytes = []
+            downsampled_video_metadata = []
+            for downsampled_path in downsampled_paths:
+                mp4_bytes = io.BytesIO(downsampled_path.read_bytes())
+                downsampled_video_bytes.append(mp4_bytes)
+                downsampled_video_metadata.append(ffmpeg.probe(downsampled_path))
+
+        # Build output object
+        data = ExtractedData(
             s3_key=s3_key,
-            video_id=video_id,
-            video_metadata=video_metadata,
+            in_video_metadata=video_metadata,
+            out_video_metadata=downsampled_video_metadata,
             session_metadata=session_metadata,
-            sampled_frames=sampled_frames,
+            downsampled_video_bytes=downsampled_video_bytes,
+            controls_csv_str=str(files['csv'])
         )
+
+        # Cleanup downsampled files and their directory
+        for downsampled_path in downsampled_paths:
+            try:
+                downsampled_path.unlink(missing_ok=True)
+            except Exception:
+                logging.warning(f"Failed to remove {downsampled_path}")
+        for p in downsampled_paths:
+            try:
+                p.parent.rmdir()
+            except Exception:
+                pass
+        logging.info(f"Removed downsampled paths for {s3_key}")
+
+        return data
+
     except Exception as e:
         logging.error(f"Failed to process single-video TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
         raise e
-
-
-def _process_multi_video_tar(tar: tarfile.TarFile, s3_key: str) -> list[ExtractedData]:
-    """Processes a TAR file containing multiple videos grouped by a numerical base name."""
-    results = []
-    file_groups = defaultdict(dict)
-    
-    for member in tar.getmembers():
-        if member.isfile():
-            base_name, extension = os.path.splitext(os.path.basename(member.name))
-            extension = extension.lower().strip('.')
-            if extension in ['mp4', 'json', 'csv']:
-                file_groups[base_name][extension] = tar.extractfile(member).read()
-
-    for video_id, files in file_groups.items():
-        if 'mp4' in files and 'json' in files:
-            try:
-                video_bytes = files['mp4']
-                session_metadata = json.loads(files['json'])
-                video_metadata = ffmpeg.probe(io.BytesIO(video_bytes))
-                
-                strides_spec = {3: 15, 30: 15, 60: 5}
-                sampled_frames = sample_frames_from_bytes(video_bytes, strides_spec)
-                
-                del video_bytes
-                gc.collect()
-
-                results.append(ExtractedData(
-                    s3_key=f"{s3_key}/{video_id}",
-                    video_id=video_id,
-                    video_metadata=video_metadata,
-                    session_metadata=session_metadata,
-                    sampled_frames=sampled_frames
-                ))
-            except Exception as e:
-                logging.error(f"Failed to process group '{video_id}' in TAR '{s3_key}'. Error: {e} with traceback: {traceback.format_exc()}")
-        else:
-            logging.warning(f"Skipping group '{video_id}' in TAR '{s3_key}': missing mp4 or json file.")
-            
-    return results
 
 def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData:
     """
@@ -98,6 +93,7 @@ def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData:
     'metadata.json' to decide whether to process the TAR as a single-video
     or multi-video archive.
     """
+
     with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r') as tar:
         member_names = [m.name for m in tar.getmembers()]
         
@@ -115,7 +111,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     task_list = "task_list.txt"
-    num_samples = 10
+    num_samples = 1
     with open(task_list, 'r') as f:
         s3_keys = [line.strip() for line in f if line.strip()]
     s3_keys = s3_keys[:num_samples]

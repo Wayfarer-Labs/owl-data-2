@@ -1,4 +1,3 @@
-import numpy as np
 from dataclasses import dataclass
 
 
@@ -6,7 +5,8 @@ from dataclasses import dataclass
 class ExtractedData:
     """Holds only the essential, lightweight data for quality checks."""
     s3_key: str
-    video_id: str
-    video_metadata: dict
+    downsampled_video_bytes: list[bytes]
+    controls_csv_str: str
     session_metadata: dict
-    sampled_frames: dict[str, np.ndarray]
+    in_video_metadata: dict
+    out_video_metadata: list[dict]

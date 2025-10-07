@@ -1,5 +1,6 @@
-import os, io, json, tarfile, logging, ffmpeg, boto3, traceback, tempfile, pathlib
-
+import os, io, json, tarfile, logging, ffmpeg, boto3, traceback, pathlib
+# Add to the top-level imports in tar_utils.py
+import tempfile, shutil, pathlib
 from owl_data.waypoint_1.game_data.owl_types import ExtractedData
 from owl_data.waypoint_1.game_data.utils.mp4_utils import downsample_video_from_path
 
@@ -104,6 +105,66 @@ def extract_and_sample(tar_bytes: bytes, s3_key: str) -> ExtractedData:
         else:
             logging.error(f"Detected 'Multi-Video' format for TAR '{s3_key}' with members: {member_names} and {len(member_names)} members.")
             raise Exception(f"TAR does not conform to single-video format. {member_names}")
+
+
+# Add this function to tar_utils.py
+def build_downsampled_tar_from_tar_bytes(tar_bytes: bytes, s3_key: str) -> pathlib.Path:
+    """
+    Extracts the input TAR to a temp dir, finds the mp4, runs downsampling,
+    packages all downsampled mp4 chunks into a new TAR on disk, cleans temps,
+    and returns the local path to the new TAR.
+    """
+    work_dir = pathlib.Path(tempfile.mkdtemp(prefix="owl_downsample_"))
+    extracted_dir = work_dir / "extracted"
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Extract original tar to temp
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r') as tar:
+        tar.extractall(path=extracted_dir)
+
+    # 2) Find mp4 path
+    mp4_path = None
+    for root, _, files in os.walk(extracted_dir):
+        for fn in files:
+            if fn.lower().endswith(".mp4"):
+                mp4_path = pathlib.Path(root) / fn
+                break
+        if mp4_path:
+            break
+    if not mp4_path or not mp4_path.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise FileNotFoundError(f"No mp4 found inside TAR for {s3_key}")
+
+    # 3) Downsample to chunks (outputs under /tmp/<stem>/...)
+    from owl_data.waypoint_1.game_data.utils.mp4_utils import downsample_video_from_path
+    downsampled_paths = downsample_video_from_path(mp4_path)
+
+    # 4) Create a new tar containing ONLY the downsampled mp4 chunks
+    tmp_tar = tempfile.NamedTemporaryFile(prefix="downsampled_", suffix=".tar", delete=False)
+    tmp_tar_path = pathlib.Path(tmp_tar.name)
+    tmp_tar.close()
+    with tarfile.open(tmp_tar_path, mode="w") as out_tar:
+        for p in downsampled_paths:
+            if p.exists():
+                out_tar.add(str(p), arcname=p.name)
+
+    # 5) Cleanup downsampled files and extracted tree
+    for p in downsampled_paths:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+    # try to remove their parent directory if empty
+    try:
+        if downsampled_paths:
+            downsampled_paths[0].parent.rmdir()
+    except Exception:
+        pass
+
+    shutil.rmtree(work_dir, ignore_errors=True)
+    return tmp_tar_path
+
 
 if __name__ == "__main__":
     import boto3

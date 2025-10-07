@@ -82,7 +82,7 @@ def extraction_processor_task(
     s3_client: S3Client
 ):
     """
-    Consumer: Extracts data from TAR files and uploads .pt files to manifest bucket.
+    Consumer: Extracts data from TAR files and uploads downsampled TARs.
     """
     while True:
         s3_key, tar_bytes = buffer_queue.get()
@@ -93,30 +93,29 @@ def extraction_processor_task(
             break
 
         try:
-            # Extract data from TAR file
-            logging.info(f"Extracting data from {s3_key}")
-            extracted_data = extract_and_sample(tar_bytes, s3_key)
-            
-            if not extracted_data:
-                raise ValueError("extract_and_sample did not return valid data.")
+            logging.info(f"Building downsampled tar for {s3_key}")
+            local_tar_path = build_downsampled_tar_from_tar_bytes(tar_bytes, s3_key)
 
-            # Upload extracted data as .pt file to manifest bucket
-            logging.info(f"Uploading extracted data for {s3_key} to manifest bucket")
-            pt_s3_key = upload_extracted_data_to_s3(
-                extracted_data=extracted_data,
+            logging.info(f"Uploading downsampled tar for {s3_key} to {manifest_bucket}")
+            upload_downsampled_tar_to_s3(
                 s3_client=s3_client,
-                manifest_bucket=manifest_bucket,
-                original_s3_key=s3_key
+                bucket=manifest_bucket,
+                s3_key=s3_key,
+                local_tar_path=str(local_tar_path)
             )
-            
-            logging.info(f"Successfully processed {s3_key} -> {pt_s3_key}")
+
+            # Cleanup local tar
+            try:
+                os.unlink(local_tar_path)
+            except Exception:
+                pass
+
+            logging.info(f"Successfully processed {s3_key} -> s3://{manifest_bucket}/{s3_key}")
 
         except Exception as e:
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)
         finally:
-            # Signal that this item from the queue is finished
             buffer_queue.task_done()
-
 
 def run_extraction_pipeline(
     source_bucket: str,
@@ -147,12 +146,11 @@ def run_extraction_pipeline(
 
     # --- 2. Filter out already processed files if requested ---
     if skip_existing:
-        logging.info("Checking for existing .pt files to skip...")
-        tasks_to_process = get_missing_pt_files(
+        logging.info("Checking for existing downsampled TARs to skip...")
+        tasks_to_process = get_missing_objects_in_bucket(
             s3_client=s3_client,
-            source_bucket=source_bucket,
-            manifest_bucket=manifest_bucket,
-            tar_s3_keys=master_task_list
+            bucket=manifest_bucket,
+            object_keys=master_task_list
         )
         logging.info(f"Processing {len(tasks_to_process)} out of {len(master_task_list)} TAR files")
     else:
@@ -216,10 +214,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='TAR -> .pt extraction pipeline (multi-node)')
     parser.add_argument('--source-bucket', type=str, default='game-data')
-    parser.add_argument('--manifest-bucket', type=str, default='game-data-manifest')
+    parser = argparse.ArgumentParser(description='TAR -> downsampled TAR pipeline (multi-node)')
+    parser.add_argument('--source-bucket', type=str, default='game-data')
+    parser.add_argument('--manifest-bucket', type=str, default='game-data-downsampled')
     parser.add_argument('--task-list-path', type=str, default='task_list.txt')
-    parser.add_argument('--skip-existing', action='store_true', default=True, help='Skip TARs that already have .pt')
-    parser.add_argument('--node_rank', type=int, default=0, help='Rank of this node (0-indexed)')
     parser.add_argument('--num_nodes', '--world-size', dest='num_nodes', type=int, default=1, help='Total number of nodes')
     args = parser.parse_args()
 

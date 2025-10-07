@@ -212,3 +212,49 @@ def get_missing_pt_files(
     
     logging.info(f"Found {len(missing_tar_keys)} TAR files missing corresponding .pt files")
     return list([key + '.tar' for key in missing_tar_keys])
+
+
+def upload_downsampled_tar_to_s3(
+    s3_client,
+    bucket: str,
+    s3_key: str,
+    local_tar_path: str
+) -> str:
+    """
+    Uploads the local downsampled TAR to the specified bucket under the original TAR key.
+    """
+    try:
+        with open(local_tar_path, 'rb') as f:
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=s3_key,
+                Body=f.read(),
+                ContentType='application/x-tar'
+            )
+        logging.info(f"Uploaded downsampled TAR to s3://{bucket}/{s3_key}")
+        return s3_key
+    except Exception as e:
+        logging.error(f"Failed to upload downsampled TAR: {e}")
+        raise
+
+
+def get_missing_objects_in_bucket(
+    s3_client,
+    bucket: str,
+    object_keys: list[str]
+) -> list[str]:
+    """
+    Returns object keys that do not exist in the given bucket.
+    Uses HEAD per key to avoid listing entire buckets.
+    """
+    missing: list[str] = []
+    for key in object_keys:
+        try:
+            s3_client.head_object(Bucket=bucket, Key=key)
+        except ClientError as e:
+            if e.response.get('Error', {}).get('Code') in ('404', 'NoSuchKey', 'NotFound'):
+                missing.append(key)
+            else:
+                # For permission/other errors, re-raise to surface issues
+                raise
+    return missing

@@ -164,20 +164,20 @@ def run_extraction_pipeline(
     # Add shutdown signal
     master_queue.put(None)
 
-    logging.info(f"Starting extraction pipeline with {NUM_PROCESSORS} processors...")
+    logging.info(f"Starting extraction pipeline with {num_processors} processors...")
 
     # Start downloader thread
     threads: List[threading.Thread] = []
     downloader = threading.Thread(
         target=extraction_downloader_task,
-        args=(source_bucket, master_queue, buffer_queue, s3_client, NUM_PROCESSORS),
+        args=(source_bucket, master_queue, buffer_queue, s3_client, num_processors),
         name="ExtractionDownloader"
     )
     threads.append(downloader)
     downloader.start()
 
     # Start processor threads
-    for i in range(NUM_PROCESSORS):
+    for i in range(num_processors):
         processor = threading.Thread(
             target=extraction_processor_task,
             args=(buffer_queue, manifest_bucket, s3_client, local_extracted_data_dir),

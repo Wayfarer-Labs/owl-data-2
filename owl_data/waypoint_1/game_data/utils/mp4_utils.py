@@ -48,6 +48,7 @@ def downsample_video_from_path(
                     "-c:v", "libx264",
                     "-preset", "veryfast",
                     "-crf", str(crf),
+                    "-threads", "1",
                     "-an",
                     str(out_path_chunk)
                 ]

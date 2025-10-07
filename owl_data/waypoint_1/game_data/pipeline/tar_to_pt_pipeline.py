@@ -21,13 +21,10 @@ from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
 
-from owl_data.waypoint_1.game_data.utils.tar_utils import extract_and_sample
-from owl_data.waypoint_1.game_data.utils.s3_utils import upload_extracted_data_to_s3, get_missing_pt_files
-
+from owl_data.waypoint_1.game_data.owl_types import ExtractedData
 S3Client = type(boto3.client('s3'))
 
 load_dotenv()
-from owl_data.waypoint_1.game_data.constants import MAX_FILE_SIZE_BYTES
 
 
 def extraction_downloader_task(
@@ -41,6 +38,10 @@ def extraction_downloader_task(
     Producer: Downloads TAR files from source bucket and places them in buffer queue.
     Similar to the original downloader but for the extraction pipeline.
     """
+    
+    ExtractedData.set_raw_data_bucket(bucket_name)
+    ExtractedData.set_s3_client(s3_client)
+
     while True:
         s3_key = master_queue.get()
 
@@ -53,21 +54,14 @@ def extraction_downloader_task(
             break
 
         try:
-            meta = s3_client.head_object(Bucket=bucket_name, Key=s3_key)
-            size = meta['ContentLength']
-
-            if size > MAX_FILE_SIZE_BYTES or size == 0:
-                logging.warning(f"SKIPPING {s3_key} - Invalid size: {size / 1e6:.2f} MB.")
-                master_queue.task_done()
-                continue
-
-            logging.info(f"Downloading {s3_key} ({size / 1e6:.2f} MB)...")
-            response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-            tar_bytes = response['Body'].read()
+            tar_bytes, size = ExtractedData.download_raw_data_from_s3(s3_key)
+            
+            if tar_bytes is None:
+                logging.info(f"'{s3_key}' skipped with {size=}")
+                continue # still triggers finally
 
             buffer_queue.put((s3_key, tar_bytes))
             logging.info(f"'{s3_key}' placed on buffer. Buffer size: {buffer_queue.qsize()}")
-
         except ClientError as e:
             logging.error(f"S3 client error for {s3_key}: {e}")
         except Exception as e:
@@ -84,6 +78,8 @@ def extraction_processor_task(
     """
     Consumer: Extracts data from TAR files and uploads downsampled TARs.
     """
+    ExtractedData.set_extracted_data_bucket(manifest_bucket)
+    ExtractedData.set_s3_client(s3_client)
     while True:
         s3_key, tar_bytes = buffer_queue.get()
 
@@ -94,28 +90,18 @@ def extraction_processor_task(
 
         try:
             logging.info(f"Building downsampled tar for {s3_key}")
-            local_tar_path = build_downsampled_tar_from_tar_bytes(tar_bytes, s3_key)
-
+            tmp_tar_path = ExtractedData.downsample_raw_data_to_tmp(tar_bytes)
             logging.info(f"Uploading downsampled tar for {s3_key} to {manifest_bucket}")
-            upload_downsampled_tar_to_s3(
-                s3_client=s3_client,
-                bucket=manifest_bucket,
-                s3_key=s3_key,
-                local_tar_path=str(local_tar_path)
-            )
-
-            # Cleanup local tar
-            try:
-                os.unlink(local_tar_path)
-            except Exception:
-                pass
-
+            ExtractedData.upload_extracted_data_to_s3(tmp_tar_path, s3_key)
             logging.info(f"Successfully processed {s3_key} -> s3://{manifest_bucket}/{s3_key}")
 
         except Exception as e:
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)
         finally:
+            try: os.unlink(tmp_tar_path)
+            except Exception: pass
             buffer_queue.task_done()
+
 
 def run_extraction_pipeline(
     source_bucket: str,
@@ -147,11 +133,11 @@ def run_extraction_pipeline(
     # --- 2. Filter out already processed files if requested ---
     if skip_existing:
         logging.info("Checking for existing downsampled TARs to skip...")
-        tasks_to_process = get_missing_objects_in_bucket(
+        tasks_to_process = ExtractedData.get_tar_mismatches_in_buckets(
             s3_client=s3_client,
             bucket=manifest_bucket,
-            object_keys=master_task_list
-        )
+            object_keys=master_task_list)
+
         logging.info(f"Processing {len(tasks_to_process)} out of {len(master_task_list)} TAR files")
     else:
         tasks_to_process = master_task_list

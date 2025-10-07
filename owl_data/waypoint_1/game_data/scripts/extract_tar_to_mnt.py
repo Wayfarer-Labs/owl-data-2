@@ -157,20 +157,8 @@ def extract_tar(tar_path: pathlib.Path) -> pathlib.Path:
     dst_dir = tar_path.with_suffix('')  # remove .tar
     dst_dir.mkdir(parents=True, exist_ok=True)
 
-    # Basic path traversal guard
-    def _is_within_directory(directory: pathlib.Path, target: pathlib.Path) -> bool:
-        directory = directory.resolve()
-        target = target.resolve()
-        return str(target).startswith(str(directory))
-
     with tarfile.open(tar_path, mode='r:*') as tf:
-        safe_members = []
-        for m in tf.getmembers():
-            # Resolve extraction target and ensure it stays inside dst_dir
-            target_path = (dst_dir / m.name).resolve()
-            if _is_within_directory(dst_dir, target_path):
-                safe_members.append(m)
-        tf.extractall(path=dst_dir, members=safe_members)
+        tf.extractall(path=dst_dir, filter='data')
     
     return dst_dir
 

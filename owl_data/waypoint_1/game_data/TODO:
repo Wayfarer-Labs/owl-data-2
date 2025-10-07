@@ -8,9 +8,11 @@ TODO:
 video encoder:
 2 videos concatenated together is bad    
 use gemini 2.5 flash lite for video stuff
+
 1) turn videos into 240p, 10fps, with fast ffmpeg commands and save on s3
 2) log s3 down and gemini roundtrip latencies
 3) get all the flags (is_menu, is_flicker, is_dark?) 
+4) DEDUPLICATE: And give reasons for why
 
 -- Agent Prompt 1:
 

@@ -1,14 +1,3 @@
-"""
-Pipeline 2: Manifest Generation Pipeline
-
-This pipeline downloads .pt files from the manifest bucket (game-data-manifest),
-loads the ExtractedData objects, runs quality checks, and generates a parquet
-manifest file.
-
-This allows for fast iteration when experimenting with different quality check
-methods without re-downloading and re-extracting the original TAR files.
-"""
-
 import os
 import queue
 import logging
@@ -37,7 +26,7 @@ def manifest_downloader_task(
     num_processors: int
 ):
     """
-    Producer: Downloads .pt files from manifest bucket and places ExtractedData in buffer queue.
+    Producer: Downloads downsampled .tar files from manifest bucket and places ExtractedData in buffer queue.
     """
     while True:
         pt_s3_key = master_queue.get()
@@ -77,7 +66,7 @@ def manifest_processor_task(
     file_lock: threading.Lock
 ):
     """
-    Consumer: Runs quality checks on ExtractedData and writes results to parquet manifest.
+    Consumer: Runs quality checks on downsampled .tar files and writes results to parquet manifest.
     """
     batch_writer = ParquetBatchWriter(output_path, file_lock, batch_size=50)
 

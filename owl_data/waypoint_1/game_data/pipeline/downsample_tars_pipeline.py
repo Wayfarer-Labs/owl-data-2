@@ -1,15 +1,3 @@
-"""
-Pipeline 1: TAR Extraction Pipeline
-
-This pipeline downloads TAR files from the source bucket (game-data), 
-extracts the video data and metadata, and uploads the ExtractedData 
-objects as .pt files to the manifest bucket (game-data-manifest).
-
-This separates the expensive extraction process from the quality checks,
-allowing for faster iteration when experimenting with different quality
-check methods.
-"""
-
 import os
 import queue
 import logging

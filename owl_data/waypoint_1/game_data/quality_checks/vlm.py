@@ -1,63 +1,118 @@
+import subprocess
+import tempfile
 import os
-import logging
-import base64
-import io
-import time
-import requests
-import numpy as np
-from PIL import Image
-import dotenv
-from functools import wraps
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
 
-dotenv.load_dotenv()
+load_dotenv()
 
-# --- Configuration ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable not set.")
+# Video processing parameters
+VIDEO_PATH = "sample/vid.mp4"
+t_start = 0  # Start time in seconds
+t_end = 10   # End time in seconds
 
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={GEMINI_API_KEY}"
-PROMPT = "Is this image from a video game showing active gameplay or a menu/UI screen? Answer with only the single word 'gameplay' or 'menu'."
+# Downsampling parameters
+TARGET_HEIGHT = 240
+FPS = 10
+CRF = 28  # Compression quality (higher = more compression, 18-28 is reasonable)
 
+def create_downsampled_clip(input_path, output_path, start_time, end_time, height=240, fps=10, crf=28):
+    """
+    Create a downsampled clip from a video.
 
-def log_time(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        logging.info(f"{func.__name__} took {end_time - start_time:.2f} seconds")
-        return result
-    return wrapper
+    :param input_path: Path to input video
+    :param output_path: Path to output video
+    :param start_time: Start time in seconds
+    :param end_time: End time in seconds
+    :param height: Target height (width will be calculated to preserve aspect ratio)
+    :param fps: Target frames per second
+    :param crf: Compression quality (18-28 recommended, higher = more compression)
+    """
+    duration = end_time - start_time
 
-def _encode_frame(frame_chw: np.ndarray) -> str:
-    """Converts a CHW NumPy array to a base64 encoded JPEG string."""
-    frame_hwc = frame_chw.transpose(1, 2, 0)
-    image = Image.fromarray(frame_hwc.astype('uint8'), 'RGB')
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG")
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+    subprocess.run([
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+        "-ss", str(start_time),
+        "-t", str(duration),
+        "-vf", f"fps={fps},scale=-2:{height}",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", str(crf),
+        "-an",  # Remove audio
+        output_path
+    ], check=True)
 
-@log_time
-def _classify_single_frame(encoded_frame: str, max_retries: int = 3) -> str:
-    """Sends a single frame to the Gemini API and returns the classification."""
-    payload = {
-        "contents": [{"parts": [{"text": PROMPT}, {"inlineData": {"mimeType": "image/jpeg", "data": encoded_frame}}]}]
-    }
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(API_URL, json=payload, timeout=20)
-            response.raise_for_status()
-            result = response.json()
-            text = result['candidates'][0]['content']['parts'][0]['text'].strip().lower()
-            return 'menu' if 'menu' in text else 'gameplay'
-        except requests.RequestException as e:
-            logging.warning(f"API request failed on attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-            else:
-                return "error"
-        except (KeyError, IndexError):
-            return "error"
-    return "error"
+def analyze_video_with_gemini(video_path, prompt="Describe what is happening in this video."):
+    """
+    Send a video to Gemini for analysis.
+
+    :param video_path: Path to video file
+    :param prompt: Prompt for Gemini
+    :return: Response text from Gemini
+    """
+    client = genai.Client()
+    model = "gemini-2.5-flash-lite"
+
+    # Read video bytes
+    with open(video_path, "rb") as f:
+        video_bytes = f.read()
+
+    # Create parts for the request
+    parts = [
+        types.Part(text=prompt),
+        types.Part(inline_data=types.Blob(data=video_bytes, mime_type='video/mp4'))
+    ]
+
+    # Count tokens
+    total_tokens = client.models.count_tokens(
+        model=model,
+        contents=types.Content(parts=parts)
+    )
+    print(f"Total tokens: {total_tokens}")
+
+    # Generate response
+    response = client.models.generate_content(
+        model=model,
+        contents=types.Content(parts=parts)
+    )
+
+    output = response.candidates[0].content.parts[0].text
+    return output
+
+if __name__ == "__main__":
+    # Create temporary file for downsampled video
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
+        temp_path = tmp_file.name
+
+    try:
+        print(f"Creating downsampled clip from {t_start}s to {t_end}s...")
+        create_downsampled_clip(
+            VIDEO_PATH,
+            temp_path,
+            t_start,
+            t_end,
+            height=TARGET_HEIGHT,
+            fps=FPS,
+            crf=CRF
+        )
+
+        print(f"Temporary video created at: {temp_path}")
+        print(f"File size: {os.path.getsize(temp_path) / 1024:.2f} KB")
+
+        print("\nSending to Gemini...")
+        response = analyze_video_with_gemini(
+            temp_path,
+            prompt="Describe what is happening in this video."
+        )
+
+        print("\n=== Gemini Response ===")
+        print(response)
+
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+            print(f"\nCleaned up temporary file: {temp_path}")

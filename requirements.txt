@@ -1,4 +1,6 @@
+pyarrow
 pandas
+google-genai
 multimethod
 tqdm
 ffmpeg-python

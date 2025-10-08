@@ -124,34 +124,6 @@ class FakeVLMHudAnalyzer:
 DUMMY_ANALYZERS = [MetricFillerAnalyzer(), RandomFlagAnalyzer(), FakeVLMHudAnalyzer()]
 
 # -----------------------------
-# Dummy TAR generator
-# -----------------------------
-
-def _tar_add_bytes(tf: tarfile.TarFile, arcname: str, data: bytes) -> None:
-    info = tarfile.TarInfo(name=arcname)
-    info.size = len(data)
-    info.mtime = int(time.time())
-    tf.addfile(info, io.BytesIO(data))
-
-
-def make_dummy_tar(path: Path, chunks: int = 3) -> None:
-    """Create a tar with N fake mp4 chunk entries + csv/json sidecars."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(path, mode="w") as tf:
-        # chunks
-        for i in range(chunks):
-            arc = f"chunks/{i:06d}.mp4"
-            _tar_add_bytes(tf, arc, b"FAKE_MP4_BYTES\n")
-        # csv: minimal with timestamps
-        csv_lines = ["t,event_type\n"] + [f"{i*1.0},KEY\n" for i in range(chunks*10)]
-        _tar_add_bytes(tf, "session.csv", "".join(csv_lines).encode("utf-8"))
-        # json metadata
-        meta = {"session_id": path.stem, "game": "dummy-game", "created": int(time.time())}
-        _tar_add_bytes(tf, "session.json", json.dumps(meta).encode("utf-8"))
-        # ffprobe placeholder
-        _tar_add_bytes(tf, "in_video_metadata.json", json.dumps({"streams": []}).encode("utf-8"))
-
-# -----------------------------
 # Main
 # -----------------------------
 
@@ -163,6 +135,8 @@ def main() -> int:
     ap.add_argument("--out", type=str, default="/tmp/gd_out")
     ap.add_argument("--run-id", type=str, default=None)
     ap.add_argument("--writer-id", type=str, default=None)
+    ap.add_argument("--sample-dir", type=str, default="/mnt/data/datasets/downsampled_tars")
+    ap.add_argument("--sample-size", type=int, default=10)
     args = ap.parse_args()
 
     work = Path(args.workdir)
@@ -170,13 +144,18 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
 
-    # 1) Build dummy TARs
+    # 1) Get list of TARs to process
     tars: List[str] = []
-    for i in range(args.num_tars):
-        tar_path = work / f"dummy_{i:04d}.tar"
-        make_dummy_tar(tar_path, chunks=args.chunks_per_tar)
-        tars.append(str(tar_path))
+    sample_dir = Path(args.sample_dir)
+    all_tars = sorted(p for p in sample_dir.rglob("*.tar") if p.is_file())
 
+    if not all_tars:
+        raise SystemExit(f"No .tar files found under {sample_dir}. Populate it first.")
+
+    sample_n = min(args.sample_size, len(all_tars))
+    tars = [str(p) for p in random.sample(all_tars, sample_n)]
+    print(f"Selected {len(tars)} TARs from {sample_dir} (of {len(all_tars)} total).")
+    
     # 2) Run pipeline directly (bypass analyzers.registry discovery)
     run_id = args.run_id or uuid.uuid4().hex
     print(f"RUN_ID={run_id}")

@@ -17,35 +17,8 @@ TARGET_HEIGHT = 240
 FPS = 10
 CRF = 28  # Compression quality (higher = more compression, 18-28 is reasonable)
 
-def create_downsampled_clip(input_path, output_path, start_time, end_time, height=240, fps=10, crf=28):
-    """
-    Create a downsampled clip from a video.
 
-    :param input_path: Path to input video
-    :param output_path: Path to output video
-    :param start_time: Start time in seconds
-    :param end_time: End time in seconds
-    :param height: Target height (width will be calculated to preserve aspect ratio)
-    :param fps: Target frames per second
-    :param crf: Compression quality (18-28 recommended, higher = more compression)
-    """
-    duration = end_time - start_time
-
-    subprocess.run([
-        "ffmpeg",
-        "-y",
-        "-i", input_path,
-        "-ss", str(start_time),
-        "-t", str(duration),
-        "-vf", f"fps={fps},scale=-2:{height}",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", str(crf),
-        "-an",  # Remove audio
-        output_path
-    ], check=True)
-
-def analyze_video_with_gemini(video_path, prompt="Describe what is happening in this video."):
+def analyze_video_with_gemini(video_bytes: bytes, prompt="Describe what is happening in this video."):
     """
     Send a video to Gemini for analysis.
 
@@ -55,10 +28,6 @@ def analyze_video_with_gemini(video_path, prompt="Describe what is happening in 
     """
     client = genai.Client()
     model = "gemini-2.5-flash-lite"
-
-    # Read video bytes
-    with open(video_path, "rb") as f:
-        video_bytes = f.read()
 
     # Create parts for the request
     parts = [

@@ -15,7 +15,7 @@ Assumptions about analyzers:
 - discoverable via analyzers.registry.all_analyzers() OR pass your own list
 - each analyzer exposes analyze_chunk(ctx, chunk_mp4_path, chunk_idx) -> dict
   where dict may include:
-    { 'flags': [ { name, value, score, analyzer, analyzer_version, model,
+    { 'flags': [ { name, value, score, analyzer, model,
                    prompt_id, inputs_digest, extras } ],
       'fps': float, 'width': int, 'height': int, ... }
 
@@ -48,7 +48,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.fs as pafs
 
-from owl_data.waypoint_1.game_data.quality_checks.analyzers.base import Analyzer, AnalysisContext
+from owl_data.waypoint_1.game_data.quality_checks.analyzers.base import Analyzer, AnalysisContext, CallsVLM
+from owl_data.waypoint_1.game_data.quality_checks.analyzers.vlm_query import VLMQuery
 
 # --- Optional: analyzer registry ---
 try:
@@ -85,7 +86,6 @@ FLAG_STRUCT = pa.struct([
     pa.field("value", pa.bool_()),
     pa.field("score", pa.float32()),
     pa.field("analyzer", pa.string()),
-    pa.field("analyzer_version", pa.string()),
     pa.field("model", pa.string()),
     pa.field("prompt_id", pa.string()),
     pa.field("inputs_digest", pa.string()),
@@ -118,7 +118,6 @@ FLAGS_SCHEMA = pa.schema([
     pa.field("value", pa.bool_()),
     pa.field("score", pa.float32()),
     pa.field("analyzer", pa.string()),
-    pa.field("analyzer_version", pa.string()),
     pa.field("model", pa.string()),
     pa.field("prompt_id", pa.string()),
     pa.field("inputs_digest", pa.string()),
@@ -283,7 +282,6 @@ def emit_flag_rows(flags_writer: ParquetBatchWriter, base: Dict[str, Any], flags
             "value": bool(f.get("value", False)),
             "score": f.get("score"),
             "analyzer": f.get("analyzer"),
-            "analyzer_version": f.get("analyzer_version"),
             "model": f.get("model"),
             "prompt_id": f.get("prompt_id"),
             "inputs_digest": f.get("inputs_digest"),
@@ -291,6 +289,7 @@ def emit_flag_rows(flags_writer: ParquetBatchWriter, base: Dict[str, Any], flags
             "created_at": ts,
         })
 
+from typing import Any, Dict, List, Optional
 
 def run_analysis_for_tar(
     tar_id: str,
@@ -298,27 +297,47 @@ def run_analysis_for_tar(
     tar_bytes: bytes,
     run_id: str,
     git_commit: str,
-    analyzers: List[Analyzer],
+    analyzers: List[Analyzer],                 # Analyzer has .name, .uses_vlm, etc.
     chunks_writer: ParquetBatchWriter,
     flags_writer: ParquetBatchWriter,
     errors_writer: ParquetBatchWriter,
     logger: logging.Logger,
 ) -> None:
-    try:
-        names, get_bytes = iter_tar_members(tar_bytes)
-    except Exception as e:
-        import traceback as tb
+    import time
+    import traceback as tb
+
+    # ---- helpers ------------------------------------------------------------
+    def emit_error(*, stage: str, exc: Exception, chunk_index: Optional[int]) -> None:
         errors_writer.add({
             "run_id": run_id,
             "tar_id": tar_id,
             "tar_s3_key": tar_key,
-            "chunk_index": None,
-            "stage": "open_tar",
-            "error_type": type(e).__name__,
-            "error_msg": str(e),
-            "traceback": "".join(tb.format_exception(e)),
+            "chunk_index": chunk_index,
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "error_msg": str(exc),
+            "traceback": "".join(tb.format_exception(exc)),
             "created_at": time.time(),
         })
+
+    def merge_output(into_row: Dict[str, Any], out: Dict[str, Any], merged_flags: List[Dict[str, Any]]) -> None:
+        if not out:
+            return
+        for k in ("fps", "width", "height"):
+            if k in out and into_row.get(k) is None:
+                into_row[k] = out[k]
+        # Copy other scalars if the slot is empty
+        for k, v in out.items():
+            if k not in ("flags", "fps", "width", "height") and into_row.get(k) is None:
+                into_row[k] = v
+        if isinstance(out.get("flags"), list):
+            merged_flags.extend(out["flags"])
+
+    # ---- open tar & enumerate chunks ---------------------------------------
+    try:
+        names, get_bytes = iter_tar_members(tar_bytes)
+    except Exception as e:
+        emit_error(stage="open_tar", exc=e, chunk_index=None)
         return
 
     chunk_paths = default_chunk_paths(names)
@@ -332,6 +351,7 @@ def run_analysis_for_tar(
         list_files=lambda: names,
     )
 
+    # ---- process each chunk -------------------------------------------------
     for idx, mp4_path in enumerate(chunk_paths):
         base_row: Dict[str, Any] = {
             "run_id": run_id,
@@ -347,30 +367,46 @@ def run_analysis_for_tar(
             "height": None,
             "flags": [],
         }
-
         merged_flags: List[Dict[str, Any]] = []
-        for analyzer in analyzers:
-            try:
-                out = analyzer.analyze_chunk(ctx, mp4_path, idx) or {}
-                for k in ("fps", "width", "height"):
-                    if k in out and base_row.get(k) is None:
-                        base_row[k] = out[k]
-                if "flags" in out and isinstance(out["flags"], list):
-                    merged_flags.extend(out["flags"])
-            except Exception as e:
-                import traceback as tb
-                errors_writer.add({
-                    "run_id": run_id,
-                    "tar_id": tar_id,
-                    "tar_s3_key": tar_key,
-                    "chunk_index": idx,
-                    "stage": "analyze",
-                    "error_type": type(e).__name__,
-                    "error_msg": str(e),
-                    "traceback": "".join(tb.format_exception(e)),
-                    "created_at": time.time(),
-                })
 
+        # Partition analyzers
+        vlm_analyzers: List[CallsVLM] = [a for a in analyzers if isinstance(a, CallsVLM)]  # or isinstance(a, CallsVLM)
+        non_vlm_analyzers: List[Analyzer] = [a for a in analyzers if not isinstance(a, CallsVLM)]
+
+        # ---- Phase 1: queue VLM prompts ------------------------------------
+        shared_vlm: Dict[str, Any] = {}
+        if vlm_analyzers:
+            try:
+                vlm = VLMQuery(
+                    model_id="gemini-2.5-flash-video",
+                    get_video_bytes=lambda: ctx.get_bytes(mp4_path),
+                )
+                for a in vlm_analyzers:
+                    try: a.queue_prompt(vlm, ctx, mp4_path, idx)
+                    except Exception as e: emit_error(stage=f"vlm.queue_prompt:{a.name}", exc=e, chunk_index=idx)
+
+                shared_vlm = vlm.send_queries()
+
+            except Exception as e:
+                emit_error(stage="vlm.send_queries", exc=e, chunk_index=idx)
+                shared_vlm = {}
+
+        # ---- Phase 2: non-VLM analyzers ------------------------------------
+        for a in non_vlm_analyzers:
+            try:
+                out = a.analyze_chunk(ctx, mp4_path, idx)
+                merge_output(base_row, out, merged_flags)
+            except Exception as e: emit_error(stage=f"analyze:{a.name}", exc=e, chunk_index=idx)
+
+        # ---- Phase 3: fan-out VLM response ---------------------------------
+        if shared_vlm:
+            for a in vlm_analyzers:
+                try:
+                    out = a.receive_response(shared_vlm)
+                    merge_output(base_row, out, merged_flags)
+                except Exception as e: emit_error(stage=f"vlm.receive_response:{a.name}", exc=e, chunk_index=idx)
+
+        # ---- write outputs ---------------------------------------------------
         base_row["flags"] = merged_flags
         chunks_writer.add(base_row)
         if merged_flags:

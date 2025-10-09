@@ -1,6 +1,7 @@
 # analyzers/base.py
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, Iterable, Protocol, Callable
+from typing import Callable, Iterable, Protocol, Dict, Any
 
 @dataclass(frozen=True)
 class AnalysisContext:
@@ -11,12 +12,26 @@ class AnalysisContext:
     get_bytes: Callable[[str], bytes]
     list_files: Callable[[], Iterable[str]]
 
-
 class Analyzer(Protocol):
     name: str
-    version: str
-    requires: Iterable[str]  # e.g. ["video_mp4", "controls_csv", "session_json", "ffprobe_json"]
+    uses_vlm: bool
+    requires: Iterable[str]
+    def analyze_chunk(self, ctx: AnalysisContext, chunk_mp4_path: str, chunk_idx: int) -> Dict[str, Any]: ...
 
-    def analyze_chunk(self, ctx: AnalysisContext, chunk_mp4_path: str, chunk_idx: int) -> Dict[str, Any]:
-        ...
+class AnalyzerBase:
+    name = "analyzer"
+    uses_vlm = False
+    requires: Iterable[str] = ()
+
+class CallsVLM(AnalyzerBase):
+    """Mix-in for analyzers that participate in a single shared VLM call per chunk."""
+    uses_vlm = True
+    
+    # Add one instruction to the shared prompt. Use your analyzer's `name` as the response key.
+    def queue_prompt(self, vlm: "VLMQuery", ctx: AnalysisContext, chunk_mp4_path: str, chunk_idx: int) -> None:
+        raise NotImplementedError
+
+    # Read the shared JSON response and return your own {'flags': [...], ...}
+    def receive_response(self, shared_json: dict) -> Dict[str, Any]:
+        raise NotImplementedError
 

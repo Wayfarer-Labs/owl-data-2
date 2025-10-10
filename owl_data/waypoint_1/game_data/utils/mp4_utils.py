@@ -7,63 +7,72 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-
+import pathlib, logging, subprocess
+import ffmpeg
 
 
 def downsample_video_from_path(
     in_video_path: pathlib.Path,
-    intervals_seconds: list[float] = [60.] * 10,
+    intervals_seconds: list[float] | None = None,
     downsampled_fps: int = 10,
     new_height: int = 240,
     crf: int = 18,
 ) -> list[pathlib.Path]:
-    """
-    Decodes an in-memory video and downsamples it based on a given specification.
-    """
-    import subprocess, ffmpeg
-    out_path = pathlib.Path('/tmp') / in_video_path.stem
-    out_path.mkdir(parents=True, exist_ok=True)
-    
-    start_time, out_path_chunks = 0., [],
-    try: 
-        video_duration_seconds = int(float(ffmpeg.probe(in_video_path)['streams'][0]['duration']))
-    except:
-        logging.error(f'Error getting video duration for {in_video_path}')
-        video_duration_seconds = 600
+    if intervals_seconds is None:
+        intervals_seconds = [60.0] * 10
 
+    out_dir = pathlib.Path("/tmp") / in_video_path.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Probe duration (fall back to 600s if probe fails)
     try:
-        for duration in intervals_seconds:
-                out_path_chunk = out_path / f"{out_path.stem}_{start_time:.0f}_{start_time + duration:.0f}.mp4"
-                
-                if start_time + duration > video_duration_seconds:
-                    duration = video_duration_seconds - start_time
+        probe = ffmpeg.probe(str(in_video_path))
+        # Prefer container duration; fall back to first video stream
+        dur_str = probe.get("format", {}).get("duration") or probe["streams"][0]["duration"]
+        video_duration_seconds = float(dur_str)
+    except Exception:
+        logging.error(f"Error getting video duration for {in_video_path}; defaulting to 600s")
+        video_duration_seconds = 600.0
 
-                cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-ss", f"{start_time:.3f}",            # input-seek (fast)
-                    "-i", str(in_video_path),
-                    "-t", f"{duration:.3f}",               # duration, not absolute end time
-                    "-vf", f"fps={downsampled_fps},scale=-2:{new_height}",
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", str(crf),
-                    "-threads", "1",
-                    "-an",
-                    str(out_path_chunk)
-                ]
+    start = 0.0
+    out_paths: list[pathlib.Path] = []
 
-                inst = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                start_time += duration
-                out_path_chunks.append(out_path_chunk)
-    finally:
-        for out_path_chunk in out_path_chunks:
-            if not out_path_chunk.exists():
-                logging.error(f"Error processing chunk out_path_chunk: {out_path_chunk}")
-            else:
-                logging.debug(f"Processed chunk: {out_path_chunk}")
+    for idx, want in enumerate(intervals_seconds):
+        remaining = video_duration_seconds - start
+        if remaining <= 0:
+            break  # we're done; don't make extra files
 
-        return out_path_chunks
+        duration = min(want, remaining)  # allow a final partial chunk
+
+        out_path = out_dir / f"{out_dir.stem}_{int(start)}_{int(start + duration)}.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.3f}",         # input seek
+            "-i", str(in_video_path),
+            "-t", f"{duration:.3f}",       # duration (not absolute end)
+            "-vf", f"fps={downsampled_fps},scale=-2:{new_height}",
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", str(crf),
+            "-threads", "1",
+            "-an",
+            str(out_path),
+        ]
+        proc = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if out_path.exists() and out_path.stat().st_size > 0 and proc.returncode == 0:
+            logging.debug(f"Processed chunk: {out_path}")
+            out_paths.append(out_path)
+        else:
+            logging.error(f"Failed chunk (skipping): {out_path}")
+
+        start += duration  # advance by the actual duration we used
+
+        # If we just consumed the tail exactly, stop.
+        if start >= video_duration_seconds:
+            break
+
+    return out_paths
+
 
 
 

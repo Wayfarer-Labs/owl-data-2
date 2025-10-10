@@ -41,15 +41,16 @@ def build_prompt(duration_sec: float) -> str:
     return (
         "You are given a single video clip.\n"
         f"The clip's total duration is {duration_sec:.3f} seconds.\n\n"
-        "Task: Identify time intervals (in seconds) where the player has a menu screen open. "
-        "This is for purposes of detecting pauses in gameplay of the game because a menu has paused the game.\n\n"
+        "Task: Identify time intervals (in seconds) where the player has a menu screen open, or the game is in a loading screen. "
+        "This is for purposes of detecting pauses in gameplay.\n\n"
         "HARD REQUIREMENTS:\n"
-        f"- Every interval must satisfy 0.0 <= start_sec < end_sec <= {duration_sec:.3f}\n"
+        f"- Every interval must satisfy 0 <= start_sec < end_sec <= {duration_sec:.3f}\n"
         "- Do not output timestamps outside the clip.\n"
         "- Merge overlapping/adjacent intervals; no overlaps.\n"
+        "- Do not get mixed up between gameplay (quick movement) and loading screens and menus (maps, etc.).\n"
         "- If none found, return the empty structure below.\n\n"
         "Output JSON ONLY, EXACTLY this schema:\n"
-        '{"intervals":[{"start_sec":<float>,"end_sec":<float>}]}\n'
+        '{"intervals":[{"start_sec":<int>,"end_sec":<int>}]}\n'
         'If you did not find any menus, output: {"intervals":[]}\n'
     )
 
@@ -333,6 +334,14 @@ def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
 #     ][:limit]
 #     write_all_csv(paths, dst_csv_path)
 
+
+# /home/sky/owl-data-2/5078554u5th5qyj/2025-10-05 14-32-58_180_234.mp4
+# ^ try above with gemini
+if __name__ == "__main__":
+    path = "/home/sky/owl-data-2/5078554u5th5qyj/2025-10-05 14-32-58_180_234.mp4"
+    intervals = ask_gemini(path, path, open(path, "rb").read())
+    print(intervals)
+    exit()
 
 if __name__ == "__main__":
     import subprocess

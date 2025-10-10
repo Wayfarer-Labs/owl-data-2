@@ -41,9 +41,9 @@ def downsample_video_from_path(
                 cmd = [
                     "ffmpeg",
                     "-y",
-                    "-ss", str(start_time),                 # optionally move -ss before -i
+                    "-ss", f"{start_time:.3f}",            # input-seek (fast)
                     "-i", str(in_video_path),
-                    "-to", str(start_time + duration),               # or use "-to", str(start_time + duration)
+                    "-t", f"{duration:.3f}",               # duration, not absolute end time
                     "-vf", f"fps={downsampled_fps},scale=-2:{new_height}",
                     "-c:v", "libx264",
                     "-preset", "veryfast",

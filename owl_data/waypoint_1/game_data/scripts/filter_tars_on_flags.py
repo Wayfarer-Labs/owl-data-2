@@ -9,8 +9,6 @@ from dotenv import load_dotenv
 
 from owl_data.waypoint_1.game_data.scripts.extract_tar_to_mnt import s3_client, MNT_DST_PATH
 from owl_data.waypoint_1.game_data.utils.s3_utils import download_extracted_data_from_s3
-from owl_data.waypoint_1.game_data.quality_checks.quality_checks import check_darkness, check_for_menus
-from owl_data.waypoint_1.game_data.constants import MENU_THRESHOLD
 
 
 load_dotenv()

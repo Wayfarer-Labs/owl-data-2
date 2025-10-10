@@ -7,7 +7,6 @@ import os
 import threading
 
 from owl_data.waypoint_1.game_data.owl_types import GameDataClient
-from owl_data.waypoint_1.game_data.constants import MENU_THRESHOLD
 
 @cache
 def get_commit_hash() -> str:

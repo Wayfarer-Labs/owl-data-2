@@ -324,6 +324,9 @@ def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
         write_csv_rows(intervals, csv_path, tar_path, mp4_chunk_name)
 
 
+if __name__ == "__main__":
+    write_all_csv(TAR_PATHS, 'menu_intervals_new_prompt_new_tars.csv')
+
 # if __name__ == "__main__":
 #     import csv
 #     csv_path = "/home/sky/owl-data-2/menu_intervals_exceeds_time.csv"
@@ -335,37 +338,37 @@ def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
 #     write_all_csv(paths, dst_csv_path)
 
 
-# /home/sky/owl-data-2/5078554u5th5qyj/2025-10-05 14-32-58_180_234.mp4
-# ^ try above with gemini
-if __name__ == "__main__":
-    path = "/home/sky/owl-data-2/5078554u5th5qyj/2025-10-05 14-32-58_180_234.mp4"
-    intervals = ask_gemini(path, path, open(path, "rb").read())
-    print(intervals)
-    exit()
+# # /home/sky/owl-data-2/5078554u5th5qyj/2025-10-05 14-32-58_180_234.mp4
+# # ^ try above with gemini
+# if __name__ == "__main__":
+#     path = "/home/sky/owl-data-2/5078554u5th5qyj/2025-10-05 14-32-58_180_234.mp4"
+#     intervals = ask_gemini(path, path, open(path, "rb").read())
+#     print(intervals)
+#     exit()
 
-if __name__ == "__main__":
-    import subprocess
-    num_samples = 10
-    out_dir = "/home/sky/owl-data-2/menu_samples/"
-    os.makedirs(out_dir, exist_ok=True)
-    rows = [
-        pick_random_interval_row(
-            "/home/sky/owl-data-2/menu_intervals_exceeds_time_new.csv",
-            min_duration=4,
-            max_duration=1000,
-        )
-        for _ in range(num_samples)
-    ]
-    tars_in_rows = set([row['tar_name'] for row in rows])
-    for row in rows:
-        print(row)
-        path = visualize(row['tar_name'], row['mp4_chunk_name'], row['menu_start_sec'], row['menu_end_sec'])
-        print(path)
-        # This line may not work as intended because: 
-        #  - subprocess.Popen runs asynchronously (you won’t see errors if the command fails)
-        #  - path may not be properly shell-escaped
-        #  - You should use a list for command and better error handling
-        #  - Use subprocess.run instead of Popen if you just want to copy and wait for it to finish
+# if __name__ == "__main__":
+#     import subprocess
+#     num_samples = 10
+#     out_dir = "/home/sky/owl-data-2/menu_samples/"
+#     os.makedirs(out_dir, exist_ok=True)
+#     rows = [
+#         pick_random_interval_row(
+#             "/home/sky/owl-data-2/menu_intervals_exceeds_time_new.csv",
+#             min_duration=4,
+#             max_duration=1000,
+#         )
+#         for _ in range(num_samples)
+#     ]
+#     tars_in_rows = set([row['tar_name'] for row in rows])
+#     for row in rows:
+#         print(row)
+#         path = visualize(row['tar_name'], row['mp4_chunk_name'], row['menu_start_sec'], row['menu_end_sec'])
+#         print(path)
+#         # This line may not work as intended because: 
+#         #  - subprocess.Popen runs asynchronously (you won’t see errors if the command fails)
+#         #  - path may not be properly shell-escaped
+#         #  - You should use a list for command and better error handling
+#         #  - Use subprocess.run instead of Popen if you just want to copy and wait for it to finish
         
-        import shutil
-        shutil.copy(str(path), out_dir)
+#         import shutil
+#         shutil.copy(str(path), out_dir)

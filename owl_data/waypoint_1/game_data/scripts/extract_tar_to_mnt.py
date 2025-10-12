@@ -299,7 +299,7 @@ if __name__ == '__main__':
             logging.StreamHandler()
         ]
     )
-    find_nonexisting_extracted_tars('task_list.txt')
-    # main()
+    # find_nonexisting_extracted_tars('task_list.txt')
+    main()
 
     # get_all_games('task_list.txt')

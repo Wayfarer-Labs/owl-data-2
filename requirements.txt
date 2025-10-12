@@ -20,3 +20,4 @@ ultralytics
 notebook
 ipykernel
 jupyterlab
+tenacity

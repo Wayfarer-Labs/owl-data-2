@@ -1,6 +1,8 @@
 import os, dotenv, pathlib, typing, json, copy
 from copy import deepcopy
 from pathlib import Path
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+
 dotenv.load_dotenv()
 
 import pandas as pd
@@ -143,6 +145,45 @@ CLIENT = genai.Client()
 MODEL = 'gemini-2.5-flash-lite'
 
 
+# Retry helper for Gemini generate_content calls
+def _is_retryable_exception(e: Exception) -> bool:
+    """Return True for transient errors like timeouts and HTTP 5xx."""
+    status = getattr(e, "status", None) or getattr(e, "code", None)
+    if isinstance(status, int) and status in {500, 502, 503, 504}:
+        return True
+    msg = str(e).lower()
+    retry_tokens = [
+        "timeout",
+        "timed out",
+        "internal server error",
+        "server error",
+        "500",
+        "502",
+        "503",
+        "504",
+        "gateway timeout",
+        "service unavailable",
+    ]
+    return any(tok in msg for tok in retry_tokens)
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(6),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    retry=retry_if_exception(_is_retryable_exception),
+)
+def _generate_with_retries(contents):
+    import google.genai.types as types
+    return CLIENT.models.generate_content(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json"
+        ),
+    )
+
+
 # async function that takes bytes from an mp4 and sends a query to gemini and parses the response into a list of csv rows per interval
 def ask_gemini(tar_path: str, mp4_chunk_name: str, mp4_bytes: bytes) -> dict:
     global CLIENT, MODEL
@@ -157,14 +198,8 @@ def ask_gemini(tar_path: str, mp4_chunk_name: str, mp4_bytes: bytes) -> dict:
     ])
 
     try:
-        # Optional but helpful: force JSON output
-        response: types.GenerateContentResponse = CLIENT.models.generate_content(
-            model=MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            ),
-        )
+        # Optional but helpful: force JSON output (with retries on 5xx/timeouts)
+        response: types.GenerateContentResponse = _generate_with_retries(contents)
     except Exception as e:
         err = deepcopy(EMPTY_RESPONSE)
         err["error"] = f"{type(e).__name__}: {e}"
@@ -314,6 +349,7 @@ def pick_random_interval_row(
 def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
     for tar_path, mp4_chunk_name, mp4_bytes in yield_mp4_bytes_from_tars(paths):
         intervals = ask_gemini(tar_path, mp4_chunk_name, mp4_bytes)
+        
         if not os.path.exists(csv_path):
             import csv
             # write headers
@@ -325,7 +361,7 @@ def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
 
 
 if __name__ == "__main__":
-    write_all_csv(TAR_PATHS, 'menu_intervals_new_prompt_new_tars.csv')
+    write_all_csv(TAR_PATHS, 'menu_intervals_retries.csv')
 
 # if __name__ == "__main__":
 #     import csv

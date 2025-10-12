@@ -227,12 +227,20 @@ def main():
     import argparse
     args = argparse.ArgumentParser()
     args.add_argument('--task-list-path', type=str, default='task_list.txt')
+    args.add_argument('--force-overwrite', action='store_true', default=False)
     args.add_argument('--num_nodes', type=int, default=1)
     args.add_argument('--node_rank', type=int, default=0)
     args = args.parse_args()
 
     with open(args.task_list_path, 'r') as f:
         task_ids = [line.strip() for line in f.readlines()]
+    
+    if not args.force_overwrite:
+        task_ids = find_nonexisting_extracted_tars(args.task_list_path, '/mnt/data/datasets/extracted_tars')
+
+    import random
+    random.seed(42)
+    random.shuffle(task_ids)
 
     local_task_ids = [
         t
@@ -267,6 +275,20 @@ def get_all_games(task_list_path: str) -> dict[str, int]:
         json.dump(games := dict(Counter(games).most_common()), f, indent=2)
         return games
 
+def find_nonexisting_extracted_tars(task_list_path: str, root_dir: str = '/mnt/data/datasets/extracted_tars') -> list[str]:
+    with open(task_list_path, 'r') as f:
+        task_ids = [line.strip() for line in f.readlines()]
+    
+    existing_tars = []
+    top = ['controller', 'kbm', 'unknown']
+    mid = ['3ps', 'fps', 'other']
+    for t in top:
+        for m in mid:
+            directory = pathlib.Path(root_dir) / t / m
+            for task_id in directory.glob('*/'):
+                existing_tars.append(task_id.name+'.tar')
+
+    return list(set(task_ids) - set(existing_tars))
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -277,6 +299,7 @@ if __name__ == '__main__':
             logging.StreamHandler()
         ]
     )
+    # find_nonexisting_extracted_tars('task_list.txt')
     main()
 
     # get_all_games('task_list.txt')

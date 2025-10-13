@@ -124,13 +124,14 @@ def run_extraction_pipeline(
         region_name=os.getenv('AWS_REGION')
     )
 
+    GameDataClient.set_s3_client(s3_client)
+    GameDataClient.set_raw_data_bucket(source_bucket)
+    GameDataClient.set_extracted_data_bucket(manifest_bucket)
+
     # --- 2. Filter out already processed files if requested ---
     if skip_existing:
         logging.info("Checking for existing downsampled TARs to skip...")
-        tasks_to_process = GameDataClient.get_tar_mismatches_in_buckets(
-            s3_client=s3_client,
-            bucket=manifest_bucket,
-            object_keys=master_task_list)
+        tasks_to_process = GameDataClient.get_tar_mismatches_in_buckets()
 
         logging.info(f"Processing {len(tasks_to_process)} out of {len(master_task_list)} TAR files")
     else:

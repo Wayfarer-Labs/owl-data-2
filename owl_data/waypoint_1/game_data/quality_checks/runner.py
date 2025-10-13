@@ -16,7 +16,7 @@ Assumptions about analyzers:
 - each analyzer exposes analyze_chunk(ctx, chunk_mp4_path, chunk_idx) -> dict
   where dict may include:
     { 'flags': [ { name, value, score, analyzer, model,
-                   prompt_id, inputs_digest, extras } ],
+                 extras } ],
       'fps': float, 'width': int, 'height': int, ... }
 
 Downsampled TAR layout:
@@ -48,8 +48,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.fs as pafs
 
-from owl_data.waypoint_1.game_data.quality_checks.analyzers.base import Analyzer, AnalysisContext, CallsVLM
-from owl_data.waypoint_1.game_data.quality_checks.analyzers.vlm_query import VLMQuery
+from owl_data.waypoint_1.game_data.quality_checks.analyzers.base import Analyzer, AnalysisContext
 
 # --- Optional: analyzer registry ---
 try:
@@ -75,8 +74,7 @@ def resolve_filesystem(prefix: str) -> Tuple[pafs.FileSystem, str]:
     prefix: '/mnt/foo' -> (LocalFS, '/mnt/foo')
             's3://bkt/pfx' -> (S3FS, 'bkt/pfx')
     """
-    if prefix.startswith("s3://"):
-        return pafs.S3FileSystem(), prefix[len("s3://"):]
+    if prefix.startswith("s3://"): return pafs.S3FileSystem(), prefix[len("s3://"):]
     return pafs.LocalFileSystem(), os.path.abspath(prefix)
 
 # ================= Schemas =================
@@ -87,8 +85,6 @@ FLAG_STRUCT = pa.struct([
     pa.field("score", pa.float32()),
     pa.field("analyzer", pa.string()),
     pa.field("model", pa.string()),
-    pa.field("prompt_id", pa.string()),
-    pa.field("inputs_digest", pa.string()),
     pa.field("extras", pa.map_(pa.string(), pa.string())),
 ])
 
@@ -96,14 +92,9 @@ CHUNK_SCHEMA = pa.schema([
     pa.field("run_id", pa.string()),
     pa.field("git_commit", pa.string()),
     pa.field("tar_id", pa.string()),
-    pa.field("tar_s3_key", pa.string()),
     pa.field("chunk_index", pa.int32()),
-    pa.field("chunk_id", pa.string()),
     pa.field("video_path_in_tar", pa.string()),
     pa.field("created_at", pa.float64()),
-    pa.field("fps", pa.float32()),
-    pa.field("width", pa.int32()),
-    pa.field("height", pa.int32()),
     pa.field("flags", pa.list_(FLAG_STRUCT)),
 ])
 
@@ -111,16 +102,12 @@ FLAGS_SCHEMA = pa.schema([
     pa.field("run_id", pa.string()),
     pa.field("git_commit", pa.string()),
     pa.field("tar_id", pa.string()),
-    pa.field("tar_s3_key", pa.string()),
     pa.field("chunk_index", pa.int32()),
-    pa.field("chunk_id", pa.string()),
     pa.field("name", pa.string()),
     pa.field("value", pa.bool_()),
     pa.field("score", pa.float32()),
     pa.field("analyzer", pa.string()),
     pa.field("model", pa.string()),
-    pa.field("prompt_id", pa.string()),
-    pa.field("inputs_digest", pa.string()),
     pa.field("extras", pa.map_(pa.string(), pa.string())),
     pa.field("created_at", pa.float64()),
 ])
@@ -128,7 +115,6 @@ FLAGS_SCHEMA = pa.schema([
 ERRORS_SCHEMA = pa.schema([
     pa.field("run_id", pa.string()),
     pa.field("tar_id", pa.string()),
-    pa.field("tar_s3_key", pa.string()),
     pa.field("chunk_index", pa.int32()),
     pa.field("stage", pa.string()),
     pa.field("error_type", pa.string()),
@@ -243,7 +229,8 @@ class LocalTarLoader(TarLoader):
 
 
 class S3TarLoader(TarLoader):
-    def __init__(self, client: Optional[BaseClient] = None):
+    def __init__(self, client: Optional[BaseClient] = None, bucket: str = 'game-data-downsampled'):
+        self.bucket = bucket
         self.client = client or boto3.client(
             "s3",
             aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
@@ -252,19 +239,16 @@ class S3TarLoader(TarLoader):
             region_name=os.getenv("AWS_REGION"),
         )
 
-    def __call__(self, s3_uri: str) -> bytes:
-        assert s3_uri.startswith("s3://"), f"Invalid s3 uri: {s3_uri}"
-        bucket_key = s3_uri[len("s3://"):]
-        bucket, key = bucket_key.split("/", 1)
+    def __call__(self, key: str) -> bytes:
         try:
-            obj = self.client.get_object(Bucket=bucket, Key=key)
+            obj = self.client.get_object(Bucket=self.bucket, Key=key)
             return obj["Body"].read()
         except ClientError as e:
-            raise RuntimeError(f"S3 get_object failed for {s3_uri}: {e}")
+            raise RuntimeError(f"S3 get_object failed for bucket {self.bucket} and key {key}: {e}")
 
 
-def pick_tar_loader(sample_key: str) -> TarLoader:
-    return S3TarLoader() if sample_key.startswith("s3://") else LocalTarLoader()
+# def pick_tar_loader(sample_key: str) -> TarLoader:
+#     return S3TarLoader() if sample_key.startswith("s3://") else LocalTarLoader()
 
 # ================= Core =================
 
@@ -275,16 +259,12 @@ def emit_flag_rows(flags_writer: ParquetBatchWriter, base: Dict[str, Any], flags
             "run_id": base["run_id"],
             "git_commit": base["git_commit"],
             "tar_id": base["tar_id"],
-            "tar_s3_key": base["tar_s3_key"],
             "chunk_index": base["chunk_index"],
-            "chunk_id": base["chunk_id"],
             "name": f.get("name"),
             "value": bool(f.get("value", False)),
             "score": f.get("score"),
             "analyzer": f.get("analyzer"),
             "model": f.get("model"),
-            "prompt_id": f.get("prompt_id"),
-            "inputs_digest": f.get("inputs_digest"),
             "extras": f.get("extras") or {},
             "created_at": ts,
         })
@@ -293,11 +273,10 @@ from typing import Any, Dict, List, Optional
 
 def run_analysis_for_tar(
     tar_id: str,
-    tar_key: str,
     tar_bytes: bytes,
     run_id: str,
     git_commit: str,
-    analyzers: List[Analyzer],                 # Analyzer has .name, .uses_vlm, etc.
+    analyzers: List[Analyzer],
     chunks_writer: ParquetBatchWriter,
     flags_writer: ParquetBatchWriter,
     errors_writer: ParquetBatchWriter,
@@ -306,12 +285,11 @@ def run_analysis_for_tar(
     import time
     import traceback as tb
 
-    # ---- helpers ------------------------------------------------------------
+    # ---- helpers
     def emit_error(*, stage: str, exc: Exception, chunk_index: Optional[int]) -> None:
         errors_writer.add({
             "run_id": run_id,
             "tar_id": tar_id,
-            "tar_s3_key": tar_key,
             "chunk_index": chunk_index,
             "stage": stage,
             "error_type": type(exc).__name__,
@@ -333,7 +311,7 @@ def run_analysis_for_tar(
         if isinstance(out.get("flags"), list):
             merged_flags.extend(out["flags"])
 
-    # ---- open tar & enumerate chunks ---------------------------------------
+    # ---- open tar & enumerate chunks
     try:
         names, get_bytes = iter_tar_members(tar_bytes)
     except Exception as e:
@@ -344,71 +322,37 @@ def run_analysis_for_tar(
 
     ctx = AnalysisContext(
         tar_id=tar_id,
-        tar_s3_key=tar_key,
         git_commit=git_commit,
         run_id=run_id,
         get_bytes=get_bytes,
         list_files=lambda: names,
     )
 
-    # ---- process each chunk -------------------------------------------------
+    # ---- process each chunk
     for idx, mp4_path in enumerate(chunk_paths):
         base_row: Dict[str, Any] = {
             "run_id": run_id,
             "git_commit": git_commit,
             "tar_id": tar_id,
-            "tar_s3_key": tar_key,
             "chunk_index": idx,
-            "chunk_id": f"{tar_id}:{idx}",
             "video_path_in_tar": mp4_path,
             "created_at": time.time(),
-            "fps": None,
-            "width": None,
-            "height": None,
             "flags": [],
         }
         merged_flags: List[Dict[str, Any]] = []
 
-        # Partition analyzers
-        vlm_analyzers: List[CallsVLM] = [a for a in analyzers if isinstance(a, CallsVLM)]  # or isinstance(a, CallsVLM)
-        non_vlm_analyzers: List[Analyzer] = [a for a in analyzers if not isinstance(a, CallsVLM)]
-
-        # ---- Phase 1: queue VLM prompts ------------------------------------
-        shared_vlm: Dict[str, Any] = {}
-        if vlm_analyzers:
-            try:
-                vlm = VLMQuery(
-                    model_id="gemini-2.5-flash-video",
-                    get_video_bytes=lambda: ctx.get_bytes(mp4_path),
-                )
-                for a in vlm_analyzers:
-                    try: a.queue_prompt(vlm, ctx, mp4_path, idx)
-                    except Exception as e: emit_error(stage=f"vlm.queue_prompt:{a.name}", exc=e, chunk_index=idx)
-
-                shared_vlm = vlm.send_queries()
-
-            except Exception as e:
-                emit_error(stage="vlm.send_queries", exc=e, chunk_index=idx)
-                shared_vlm = {}
-
-        # ---- Phase 2: non-VLM analyzers ------------------------------------
-        for a in non_vlm_analyzers:
+        # ---- Run all analyzers directly 
+        for a in analyzers:
             try:
                 out = a.analyze_chunk(ctx, mp4_path, idx)
                 merge_output(base_row, out, merged_flags)
-            except Exception as e: emit_error(stage=f"analyze:{a.name}", exc=e, chunk_index=idx)
+            except Exception as e:
+                emit_error(stage=f"analyze:{a.name}", exc=e, chunk_index=idx)
 
-        # ---- Phase 3: fan-out VLM response ---------------------------------
-        if shared_vlm:
-            for a in vlm_analyzers:
-                try:
-                    out = a.receive_response(shared_vlm)
-                    merge_output(base_row, out, merged_flags)
-                except Exception as e: emit_error(stage=f"vlm.receive_response:{a.name}", exc=e, chunk_index=idx)
-
-        # ---- write outputs ---------------------------------------------------
+        # ---- write outputs
         base_row["flags"] = merged_flags
         chunks_writer.add(base_row)
+
         if merged_flags:
             emit_flag_rows(flags_writer, base_row, merged_flags)
 
@@ -417,16 +361,6 @@ def run_analysis_for_tar(
 def load_task_list(path: str) -> List[str]:
     with open(path, "r") as f:
         return [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
-
-
-def infer_tar_id_from_key(key: str) -> str:
-    name = key
-    if key.startswith("s3://"):
-        name = key.split("/", maxsplit=3)[-1]
-    stem = Path(name).name
-    if "." in stem:
-        stem = stem.split(".")[0]
-    return stem
 
 
 def write_run_row(out_prefix: str, run_id: str, row: Dict[str, Any]) -> None:
@@ -445,10 +379,8 @@ def write_run_row(out_prefix: str, run_id: str, row: Dict[str, Any]) -> None:
 def write_latest_pointer(out_prefix: str, pointer: Dict[str, Any]) -> None:
     fs, base = resolve_filesystem(out_prefix)
     ptr_dir = f"{base}/pointers"
-    try:
-        fs.create_dir(ptr_dir, recursive=True)
-    except Exception:
-        pass
+    try: fs.create_dir(ptr_dir, recursive=True)
+    except Exception: pass
 
     final_path = f"{ptr_dir}/latest.json"
     data = (json.dumps(pointer, separators=(",", ":")) + "\n").encode("utf-8")
@@ -473,35 +405,25 @@ def run_pipeline(
     writer_id: Optional[str] = None,
     num_workers: int = 0,
 ) -> None:
-    logger = logging.getLogger("runner")
-    run_id = run_id or str(uuid.uuid4())
-    started_at = time.time()
-    git_commit = git_commit or get_git_commit_fallback()
+    logger      = logging.getLogger("runner")
+    run_id      = run_id or str(uuid.uuid4())
+    started_at  = time.time()
+    git_commit  = git_commit or get_git_commit_fallback()
 
-    analyzers = analyzers if analyzers is not None else all_analyzers()
+    analyzers   = analyzers if analyzers is not None else all_analyzers()
 
-    partition = {"run_id": run_id}
-    chunks_w = ParquetBatchWriter(CHUNK_SCHEMA, out_prefix, "chunks", partition, batch_size=1000, writer_id=writer_id, logger=logger)
-    flags_w  = ParquetBatchWriter(FLAGS_SCHEMA,  out_prefix, "flags",  partition, batch_size=2000, writer_id=writer_id, logger=logger)
-    errors_w = ParquetBatchWriter(ERRORS_SCHEMA, out_prefix, "errors", partition, batch_size=500,  writer_id=writer_id, logger=logger)
+    partition   = {"run_id": run_id}
+    loader      = S3TarLoader()
+    chunks_w    = ParquetBatchWriter(CHUNK_SCHEMA, out_prefix, "chunks", partition, batch_size=1000, writer_id=writer_id, logger=logger)
+    flags_w     = ParquetBatchWriter(FLAGS_SCHEMA,  out_prefix, "flags",  partition, batch_size=2000, writer_id=writer_id, logger=logger)
+    errors_w    = ParquetBatchWriter(ERRORS_SCHEMA, out_prefix, "errors", partition, batch_size=500,  writer_id=writer_id, logger=logger)
 
-    manifest = [
-        {
-            "name": a.name,
-            "version": a.version,
-        }
-        for a in analyzers
-    ]
-
-    loader = pick_tar_loader(tasks[0]) if tasks else LocalTarLoader()
 
     def process_one(key: str) -> None:
-        tar_id = infer_tar_id_from_key(key)
         try:
             tar_bytes = loader(key)
             run_analysis_for_tar(
-                tar_id=tar_id,
-                tar_key=key,
+                tar_id=key,
                 tar_bytes=tar_bytes,
                 run_id=run_id,
                 git_commit=git_commit,
@@ -515,8 +437,7 @@ def run_pipeline(
             import traceback as tb
             errors_w.add({
                 "run_id": run_id,
-                "tar_id": tar_id,
-                "tar_s3_key": key,
+                "tar_id": key,
                 "chunk_index": None,
                 "stage": "download|load",
                 "error_type": type(e).__name__,
@@ -543,7 +464,7 @@ def run_pipeline(
         "started_at": started_at,
         "finished_at": finished_at,
         "git_commit": git_commit,
-        "analyzers": json.dumps(manifest),
+        "analyzers": json.dumps([{"name": a.name, "version": a.version} for a in analyzers]),
         "out_prefix": out_prefix,
     })
 
@@ -618,6 +539,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         num_workers=args.num_workers,
     )
     return 0
+
+
+if __name__ == "__main__":
+    # debug mode
+    fmt = f"%(asctime)s - %(levelname)s - node {0}/{1} - %(message)s"
+    logging.basicConfig(
+        level=getattr(logging, "DEBUG", logging.INFO),
+        format=fmt,
+    )
+
+    limit = 10 # tars
+    task_list = load_task_list('task_list.txt')[:limit]
+    run_id : str = uuid.uuid4().hex
+    print(f"RUN_ID={run_id}")
+    run_pipeline(
+        tasks=task_list,
+        out_prefix="/tmp/gd_out",
+        analyzers=None,
+        git_commit=get_git_commit_fallback(),
+        run_id=run_id,
+        writer_id=None,
+        num_workers=0,
+    )
+    exit(0)
+    
+
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -21,4 +21,5 @@ run: |
   /mnt/data/sami/owl-data-2/venv/bin/python owl_data/waypoint_1/game_data/pipeline/downsample_tars_pipeline.py \
     --node_rank ${SKYPILOT_NODE_RANK} \
     --num_nodes $SKYPILOT_NUM_NODES \
+    --skip-existing
   

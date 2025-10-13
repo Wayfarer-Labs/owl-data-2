@@ -38,6 +38,8 @@ git config --global user.name "Sami"
 
 
 # download test tar
+sudo apt-get update
+sudo apt-get install -y awscli
 
 aws s3 cp s3://game-data/fffde483e5634411.tar .
 mkdir test_tar 

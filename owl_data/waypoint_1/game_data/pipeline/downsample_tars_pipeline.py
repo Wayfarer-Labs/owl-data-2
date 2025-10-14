@@ -84,7 +84,7 @@ def extraction_processor_task(
             logging.info(f"Uploading downsampled tar for {s3_key} to {manifest_bucket}")
             GameDataClient.upload_extracted_data_to_s3(tmp_tar_path, s3_key)
             logging.info(f"Successfully processed {s3_key} -> s3://{manifest_bucket}/{s3_key}")
-            GameDataClient.move_extracted_data_to_local_dir(tmp_tar_path)
+            GameDataClient.move_extracted_data_to_local_dir(tmp_tar_path, s3_key)
             logging.info(f"Moved {tmp_tar_path} to {local_extracted_data_dir}")
         except Exception as e:
             logging.error(f"Failed to process {s3_key}: {e}", exc_info=True)

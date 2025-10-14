@@ -125,7 +125,7 @@ print (f"Found {len(TAR_PATHS)} tar paths")
 print (f"GEMINI_API_KEY Found: {os.getenv('GEMINI_API_KEY') is not None}")
 
 
-def yield_mp4_bytes_from_tars(tar_paths: list[pathlib.Path]) -> typing.Generator[tuple[str, str, bytes], None, None]:
+def yield_ext_bytes_from_tars(tar_paths: list[pathlib.Path], ext: str = ".mp4") -> typing.Generator[tuple[str, str, bytes], None, None]:
     """
     Yields a tuple of (tar_path, mp4_chunk_name, mp4_bytes) for each mp4 in tars
     """
@@ -134,7 +134,7 @@ def yield_mp4_bytes_from_tars(tar_paths: list[pathlib.Path]) -> typing.Generator
     for tar_path in tar_paths:
         with tarfile.open(tar_path) as tar:
             for member in tar.getmembers():
-                if not member.name.endswith(".mp4"):
+                if not member.name.endswith(ext):
                     continue
                 with tar.extractfile(member) as f:
                     yield (str(tar_path), member.name, f.read())
@@ -185,12 +185,12 @@ def _generate_with_retries(contents):
 
 
 # async function that takes bytes from an mp4 and sends a query to gemini and parses the response into a list of csv rows per interval
-def ask_gemini(tar_path: str, mp4_chunk_name: str, mp4_bytes: bytes) -> dict:
+def ask_gemini(tar_path: str, mp4_chunk_name: str, mp4_bytes: bytes, in_prompt: str = None) -> dict:
     global CLIENT, MODEL
     import google.genai.types as types
 
     meta = get_video_meta_from_bytes(mp4_bytes)
-    prompt = build_prompt(meta["duration_sec"])
+    prompt = in_prompt or build_prompt(meta["duration_sec"])
 
     contents = types.Content(parts=[
         types.Part(text=prompt),
@@ -347,7 +347,7 @@ def pick_random_interval_row(
     return row.to_dict()
 
 def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
-    for tar_path, mp4_chunk_name, mp4_bytes in yield_mp4_bytes_from_tars(paths):
+    for tar_path, mp4_chunk_name, mp4_bytes in yield_ext_bytes_from_tars(paths):
         intervals = ask_gemini(tar_path, mp4_chunk_name, mp4_bytes)
         
         if not os.path.exists(csv_path):
@@ -361,7 +361,7 @@ def write_all_csv(paths: list[Path], csv_path: str = CSV_PATH):
 
 
 if __name__ == "__main__":
-    write_all_csv(TAR_PATHS, 'menu_intervals_retries.csv')
+    write_all_csv(TAR_PATHS)
 
 # if __name__ == "__main__":
 #     import csv

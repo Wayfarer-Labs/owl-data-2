@@ -188,6 +188,7 @@ class GameDataClient:
     def move_extracted_data_to_local_dir(
         cls,
         src_tar_path: pathlib.Path,
+        s3_key: str,
     ) -> None:
         import shutil
         dst_dir = pathlib.Path(cls._local_extracted_data_dir)
@@ -196,9 +197,8 @@ class GameDataClient:
 
         dst_dir.mkdir(parents=True, exist_ok=True)
         
-        tar_name = '.'.join(src_tar_path.name.split('.')[-2:])
-        shutil.move(src_tar_path, dst_dir / tar_name)
-        logging.info(f"Moved {src_tar_path} to {dst_dir / tar_name}")
+        shutil.move(src_tar_path, dst_dir / s3_key)
+        logging.info(f"Moved {src_tar_path} to {dst_dir / s3_key}")
 
 
     @classmethod

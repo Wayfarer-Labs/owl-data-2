@@ -149,8 +149,8 @@ def main() -> int:
         default=1,
         help="World size: total number of nodes participating in this run")
     p.add_argument("--include-checks", type=str, required=False,
-        default=["menus", "dark_screen", "banned_exes"],
-        help="One of the above quality checks of menus, dark_screen, deduplicated")
+        default=["menus", "dark_screen", "banned_exes", "before_datetime"],
+        help="One of the above quality checks of menus, dark_screen, banned_exes, before_datetime")
     p.add_argument("--node_rank", type=int,
         default=0,
         help="This node's rank in [0, num_nodes)")

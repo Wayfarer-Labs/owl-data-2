@@ -1,5 +1,6 @@
 import pathlib
 import os
+from datetime import datetime, timezone, timedelta
 
 QUALITY_CHECKS_JSONL_TAR = '/mnt/data/datasets/quality_checks_tars'
 DOWNSAMPLED_TARS_PATH = pathlib.Path('/mnt/data/datasets/downsampled_tars')
@@ -24,6 +25,21 @@ BANNED_EXES = (
 
 BANNED_EXES = tuple(exe.lower() for exe in BANNED_EXES)
 
+
+BANNED_DATETIME_BEFORE = int(datetime(2025, 9, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+
+
+def parse_timestep(ts):
+    """
+    Parse the given timestep (expected as integer Unix timestamp or string representing an int)
+    and return it as a UTC datetime object.
+    """
+    try:
+        timestamp = int(ts)
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except Exception as e:
+        raise ValueError(f"Invalid timestep for datetime parsing: {ts}") from e
+
 from owl_data.waypoint_1.game_data.quality_checks import google_gemini
 
 gemini = google_gemini.GoogleAuthOpenAI(project_id='openworld-main')
@@ -31,7 +47,7 @@ gemini = google_gemini.GoogleAuthOpenAI(project_id='openworld-main')
 def run_checks(
     tasks: list[str],
     out_path_jsonl: str,
-    checks: list[str] = ['menus', 'dark_screen', 'banned_exes'],
+    checks: list[str] = ['menus', 'dark_screen', 'banned_exes', 'before_datetime'],
     skip_existing: bool = False
 ) -> None:
     from owl_data.waypoint_1.game_data.quality_checks.analyzers.hacky_menu_script import (
@@ -58,6 +74,7 @@ def run_checks(
             if not items:
                 print(f"No mp4 files found for {tar_path}")
                 continue
+        
             tar_paths, mp4_names, mp4_bytes = zip(*items)
             *_, metadata_jsonb = next(yield_ext_bytes_from_tars([DOWNSAMPLED_TARS_PATH / tar_path], '.json'))
             metadata_json = json.load(io.BytesIO(metadata_jsonb))
@@ -70,20 +87,33 @@ def run_checks(
                 if 'dark_screen' in checks:
                     if skip_existing and (tar_path, mp4_name, 'dark_screen') in _existing_checks:
                         print(f"Skipping ({tar_path}, {mp4_name}, dark_screen) because it already exists")
-                        continue
-                    dark_screen = gemini.ask_dark_screen(mp4_bytes)
-                    row['quality_checks']['dark_screen'] = dark_screen
+                    else:
+                        dark_screen = gemini.ask_dark_screen(mp4_bytes)
+                        row['quality_checks']['dark_screen'] = dark_screen
             
                 if 'menus' in checks:
                     if skip_existing and (tar_path, mp4_name, 'menus') in _existing_checks:
                         print(f"Skipping ({tar_path}, {mp4_name}, menus) because it already exists")
-                        continue
-                    gemini_response_menus = gemini.ask_menus(mp4_bytes)
-                    row['quality_checks']['menus'] = gemini_response_menus
+                    else:
+                        gemini_response_menus = gemini.ask_menus(mp4_bytes)
+                        row['quality_checks']['menus'] = gemini_response_menus
 
                 if 'banned_exes' in checks:
                     exe_name = metadata_json.get('game_exe', None)
                     row['quality_checks']['banned_exes'] = {'is_banned': exe_name in BANNED_EXES, 'exe_name': exe_name, 'error': None}
+
+                if 'before_datetime' in checks:
+                    created_at = metadata_json.get('created_at', None)
+                    if created_at is None:
+                        row['quality_checks']['before_datetime'] = {'is_before': None, 'created_at': None, 'threshold': None, 'error': "created_at is None"}
+                    else:
+                        created_at = parse_timestep(created_at)
+                        row['quality_checks']['before_datetime'] = {
+                            'is_before': created_at < BANNED_DATETIME_BEFORE,
+                            'created_at': created_at,
+                            'threshold': datetime.fromtimestamp(BANNED_DATETIME_BEFORE, tz=timezone.utc),
+                            'error': None
+                        }
 
                 with open(out_path_jsonl, 'a') as f:
                     f.write(json.dumps(row) + '\n')
@@ -134,12 +164,12 @@ def main() -> int:
     tasks = _load_task_list(args.task_list)
     local_tasks = [t for i, t in enumerate(tasks) if i % args.num_nodes == args.node_rank]
 
-    
+
     import multiprocessing
 
 
-    # num_procs = args.num_workers
-    num_procs = 1
+    num_procs = args.num_workers
+    # num_procs = 1
 
     # Partition local_tasks into roughly equal chunks for each process
     def chunkify(lst, n):

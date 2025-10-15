@@ -21,3 +21,4 @@ notebook
 ipykernel
 jupyterlab
 tenacity
+openai

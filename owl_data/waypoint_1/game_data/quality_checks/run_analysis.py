@@ -4,6 +4,30 @@ import os
 QUALITY_CHECKS_JSONL_TAR = '/mnt/data/datasets/quality_checks_tars'
 DOWNSAMPLED_TARS_PATH = pathlib.Path('/mnt/data/datasets/downsampled_tars')
 
+BANNED_EXES = (
+    'obs.exe',
+    'obs64.exe',
+    'obs32.exe',
+    'spotify.exe',
+    'opera.exe',
+    '',
+    'discord.exe',
+    'discordptb.exe',
+    'OWL Control.exe',
+    'firefox.exe',
+    'msedge.exe',
+    'searchapp.exe',
+    'applicationframehost.exe',
+    'discovery.exe',
+    'sh.exe'
+)
+
+BANNED_EXES = tuple(exe.lower() for exe in BANNED_EXES)
+
+
+def gemini_client():
+    pass
+
 
 def check_darkness(metadata_json: dict, mp4_bytes: bytes) -> dict:
     darkness_prompt = """
@@ -17,8 +41,8 @@ def check_darkness(metadata_json: dict, mp4_bytes: bytes) -> dict:
     If you found footage of a dark screen, output: {"is_darkness":True,"reason":"dark screen detected"}
     If not, output: {"is_darkness":False,"reason":"<what you see on screen>"}
     """
-    if metadata_json.get('game_exe') in ('obs.exe', 'obs64.exe', 'obs32.exe'):
-        return {'is_darkness': True, 'reason': 'obs.exe detected', 'error': None}
+    if metadata_json.get('game_exe', '').lower() in BANNED_EXES:
+        return {'is_darkness': True, 'reason': f'{metadata_json.get("game_exe")} detected', 'error': None}
     
     import json
     import google.genai.types as types
@@ -47,14 +71,20 @@ def run_checks(tasks: list[str], out_path_jsonl: str, checks: list[str] = ['menu
     )
     import json, tqdm, io, copy
 
-    existing_json = json.load(open(out_path_jsonl)) if os.path.exists(out_path_jsonl) else []
-    all_tar_name_chunk_pairs = [(row['tar_name'], row['chunk_name']) for row in existing_json]
+    existing_json = []
+    if os.path.exists(out_path_jsonl):
+        with open(out_path_jsonl, 'r') as f:
+            existing_json = [json.loads(line) for line in f if line.strip()]
 
     for tar_path in tqdm.tqdm(tasks):
         row_default = {'tar_name': tar_path, 'chunk_name': None, 'quality_checks': {}, 'error': None}
         rows = []
-        try: 
-            tar_paths, mp4_names, mp4_bytes = zip(*list(yield_ext_bytes_from_tars([DOWNSAMPLED_TARS_PATH / tar_path], '.mp4')))
+        try:
+            items = list(yield_ext_bytes_from_tars([DOWNSAMPLED_TARS_PATH / tar_path], '.mp4'))
+            if not items:
+                print(f"No mp4 files found for {tar_path}")
+                continue
+            tar_paths, mp4_names, mp4_bytes = zip(*items)
             *_, metadata_jsonb = next(yield_ext_bytes_from_tars([DOWNSAMPLED_TARS_PATH / tar_path], '.json'))
             metadata_json = json.load(io.BytesIO(metadata_jsonb))
  
@@ -81,6 +111,10 @@ def run_checks(tasks: list[str], out_path_jsonl: str, checks: list[str] = ['menu
         with open(out_path_jsonl, 'a') as f:
             for row in rows: f.write(json.dumps(row) + '\n')
         
+def run_checks_wrapper(args_tuple):
+    tasks, out_path_jsonl, include_checks = args_tuple
+    run_checks(tasks, out_path_jsonl, include_checks)
+
 def main() -> int:
     import argparse
 
@@ -114,7 +148,26 @@ def main() -> int:
     local_tasks = [t for i, t in enumerate(tasks) if i % args.num_nodes == args.node_rank]
 
     
-    run_checks(local_tasks, args.out_path_jsonl, args.include_checks)
+    import multiprocessing
+
+
+    num_procs = max(1, os.cpu_count() // 4)
+
+    # Partition local_tasks into roughly equal chunks for each process
+    def chunkify(lst, n):
+        k, m = divmod(len(lst), n)
+        return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n) if lst[i*k + min(i, m):(i+1)*k + min(i+1, m)]]
+
+    task_chunks = chunkify(local_tasks, num_procs)
+
+    pool_args = [(chunk, args.out_path_jsonl, args.include_checks) for chunk in task_chunks]
+
+    if num_procs == 1 or len(pool_args) == 1:
+        # Run sequentially if only one process or one chunk
+        [run_checks_wrapper(pool_args[0])]
+    else:
+        with multiprocessing.get_context("spawn").Pool(num_procs) as pool:
+            pool.map(run_checks_wrapper, pool_args)
     
 
 if __name__ == "__main__":

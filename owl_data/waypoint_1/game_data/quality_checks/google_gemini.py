@@ -262,15 +262,17 @@ class GoogleAuthOpenAI:
             err["error"] = f"{type(e).__name__}: {e}\n{''.join(tb.format_exception(e))}"
             return err
 
-# Usage
-client = GoogleAuthOpenAI()
 
-# This will work for hours, auto-refreshing tokens
-response = client.chat_completion(
-    model="google/gemini-2.5-flash-lite",
-    messages=[
-        {"role": "user", "content": "Explain how AI works"}
-    ]
-)
+if __name__ == "__main__":
+    # Usage
+    client = GoogleAuthOpenAI()
 
-print(response.choices[0].message.content)
+    # This will work for hours, auto-refreshing tokens
+    response = client.chat_completion(
+        model="google/gemini-2.5-flash-lite",
+        messages=[
+            {"role": "user", "content": "Explain how AI works"}
+        ]
+    )
+
+    print(response.choices[0].message.content)  

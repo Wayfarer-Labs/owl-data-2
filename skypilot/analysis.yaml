@@ -1,0 +1,30 @@
+
+resources:
+  image_id: docker.io/lapp0/owl-wm-cond:latest
+  cloud: kubernetes
+  cpus: 31
+  memory: 131
+
+num_nodes: 8
+
+config:
+  kubernetes:
+    pod_config:
+      spec:
+        nodeSelector:
+          node.kubernetes.io/instance-type: cpu-d3
+
+setup: |
+  sudo apt-get update
+  sudo apt-get install -y libgl1 ffmpeg
+  uv python install 3.13
+  source /mnt/data/sami/owl-data-2/venv/bin/activate
+  which python
+
+run: |
+  cd /mnt/data/sami/owl-data-2
+  source /mnt/data/sami/owl-data-2/venv/bin/activate
+  export PYTHONPATH=.
+  /mnt/data/sami/owl-data-2/venv/bin/python owl_data/waypoint_1/game_data/quality_checks/run_analysis.py \
+    --node_rank ${SKYPILOT_NODE_RANK} \
+    --num_nodes $SKYPILOT_NUM_NODES \

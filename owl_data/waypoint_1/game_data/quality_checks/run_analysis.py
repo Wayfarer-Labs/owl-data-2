@@ -24,49 +24,17 @@ BANNED_EXES = (
 
 BANNED_EXES = tuple(exe.lower() for exe in BANNED_EXES)
 
+from owl_data.waypoint_1.game_data.quality_checks import google_gemini
 
-def gemini_client():
-    pass
+gemini = google_gemini.GoogleAuthOpenAI(project_id='openworld-main')
 
-
-def check_darkness(metadata_json: dict, mp4_bytes: bytes) -> dict:
-    darkness_prompt = """
-    You are given a single video clip.
-    Your task is to identify whether the clip is of a video game,
-    or if it's just a dark screen, which would indicate that the video encountered a
-    crash or a recording malfunction.
-
-    Output JSON ONLY, EXACTLY this schema:
-    {"is_darkness":<bool>,"reason":<str>}
-    If you found footage of a dark screen, output: {"is_darkness":True,"reason":"dark screen detected"}
-    If not, output: {"is_darkness":False,"reason":"<what you see on screen>"}
-    """
-    if metadata_json.get('game_exe', '').lower() in BANNED_EXES:
-        return {'is_darkness': True, 'reason': f'{metadata_json.get("game_exe")} detected', 'error': None}
-    
-    import json
-    import google.genai.types as types
-    from owl_data.waypoint_1.game_data.quality_checks.analyzers.hacky_menu_script import _generate_with_retries
-    
-    contents = types.Content(parts=[
-        types.Part(text=darkness_prompt),
-        types.Part(inline_data=types.Blob(data=mp4_bytes, mime_type='video/mp4')),
-    ])
-
-    try:
-        response: types.GenerateContentResponse = _generate_with_retries(contents)
-        part = response.candidates[0].content.parts[0]
-        raw = getattr(part, "text", None) or getattr(part, "data", None)
-        parsed = json.loads(raw)
-        return parsed | {'error': None}
-    except Exception as e:
-        import traceback as tb
-        return {'is_darkness': False, 'reason': f'{type(e).__name__}: {e}', 'error': "".join(tb.format_exception(e))}
-
-
-def run_checks(tasks: list[str], out_path_jsonl: str, checks: list[str] = ['menus', 'dark_screen', 'deduplicated']) -> None:
+def run_checks(
+    tasks: list[str],
+    out_path_jsonl: str,
+    checks: list[str] = ['menus', 'dark_screen', 'banned_exes'],
+    skip_existing: bool = False
+) -> None:
     from owl_data.waypoint_1.game_data.quality_checks.analyzers.hacky_menu_script import (
-        ask_gemini,
         yield_ext_bytes_from_tars
     )
     import json, tqdm, io, copy
@@ -75,10 +43,16 @@ def run_checks(tasks: list[str], out_path_jsonl: str, checks: list[str] = ['menu
     if os.path.exists(out_path_jsonl):
         with open(out_path_jsonl, 'r') as f:
             existing_json = [json.loads(line) for line in f if line.strip()]
+    
+    _existing_checks: set[tuple[str, str, str]] = set() # set of tuples of tarname, chunkname, check
+    for jsonl in existing_json:
+        quality_checks = jsonl.get('quality_checks', {})
+        for check, value in quality_checks.items():
+            if value is not None and value.get('error') is None:
+                _existing_checks.add((jsonl['tar_name'], jsonl['chunk_name'], check))
 
     for tar_path in tqdm.tqdm(tasks):
         row_default = {'tar_name': tar_path, 'chunk_name': None, 'quality_checks': {}, 'error': None}
-        rows = []
         try:
             items = list(yield_ext_bytes_from_tars([DOWNSAMPLED_TARS_PATH / tar_path], '.mp4'))
             if not items:
@@ -89,27 +63,40 @@ def run_checks(tasks: list[str], out_path_jsonl: str, checks: list[str] = ['menu
             metadata_json = json.load(io.BytesIO(metadata_jsonb))
  
             for tar_path, mp4_name, mp4_bytes in zip(tar_paths, mp4_names, mp4_bytes):
+        
                 row = copy.deepcopy(row_default)
                 row['chunk_name'] = mp4_name
 
-                if 'dark_screen' in checks:                        
-                    dark_screen = check_darkness(metadata_json, mp4_bytes)
+                if 'dark_screen' in checks:
+                    if skip_existing and (tar_path, mp4_name, 'dark_screen') in _existing_checks:
+                        print(f"Skipping ({tar_path}, {mp4_name}, dark_screen) because it already exists")
+                        continue
+                    dark_screen = gemini.ask_dark_screen(mp4_bytes)
                     row['quality_checks']['dark_screen'] = dark_screen
             
                 if 'menus' in checks:
-                    gemini_response_menus = ask_gemini(tar_path, mp4_name, mp4_bytes)
+                    if skip_existing and (tar_path, mp4_name, 'menus') in _existing_checks:
+                        print(f"Skipping ({tar_path}, {mp4_name}, menus) because it already exists")
+                        continue
+                    gemini_response_menus = gemini.ask_menus(mp4_bytes)
                     row['quality_checks']['menus'] = gemini_response_menus
-                
-                rows.append(row)
+
+                if 'banned_exes' in checks:
+                    exe_name = metadata_json.get('game_exe', None)
+                    row['quality_checks']['banned_exes'] = {'is_banned': exe_name in BANNED_EXES, 'exe_name': exe_name, 'error': None}
+
+                with open(out_path_jsonl, 'a') as f:
+                    f.write(json.dumps(row) + '\n')
+                    print(f"Wrote {tar_path} {mp4_name} to {out_path_jsonl}")
 
         except Exception as e:
             import traceback as tb
             row = copy.deepcopy(row_default)
             row['error'] = "".join(tb.format_exception(e))
-            rows.append(row)
-        
-        with open(out_path_jsonl, 'a') as f:
-            for row in rows: f.write(json.dumps(row) + '\n')
+            with open(out_path_jsonl, 'a') as f:
+                f.write(json.dumps(row) + '\n')
+                print(f"ERROR: Wrote {tar_path} {mp4_name} to {out_path_jsonl}")
+
         
 def run_checks_wrapper(args_tuple):
     tasks, out_path_jsonl, include_checks = args_tuple
@@ -126,13 +113,13 @@ def main() -> int:
         default=os.path.join(QUALITY_CHECKS_JSONL_TAR, "quality_checks.jsonl"),
         help="Output prefix (local dir or s3://bucket/prefix)")
     p.add_argument("--num-workers", type=int,
-        default=0,
+        default= os.cpu_count() // 4,
         help="Parallelism via threads (0 or 1 = sequential)")
     p.add_argument("--num_nodes", type=int,
         default=1,
         help="World size: total number of nodes participating in this run")
     p.add_argument("--include-checks", type=str, required=False,
-        default=["menus", "dark_screen"],
+        default=["menus", "dark_screen", "banned_exes"],
         help="One of the above quality checks of menus, dark_screen, deduplicated")
     p.add_argument("--node_rank", type=int,
         default=0,
@@ -151,7 +138,8 @@ def main() -> int:
     import multiprocessing
 
 
-    num_procs = max(1, os.cpu_count() // 4)
+    # num_procs = args.num_workers
+    num_procs = 1
 
     # Partition local_tasks into roughly equal chunks for each process
     def chunkify(lst, n):

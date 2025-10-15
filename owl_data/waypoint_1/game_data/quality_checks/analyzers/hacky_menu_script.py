@@ -139,10 +139,10 @@ def yield_ext_bytes_from_tars(tar_paths: list[pathlib.Path], ext: str = ".mp4") 
                 with tar.extractfile(member) as f:
                     yield (str(tar_path), member.name, f.read())
 
-import google.genai as genai
+# import google.genai as genai
 
-CLIENT = genai.Client()
-MODEL = 'gemini-2.5-flash-lite'
+# CLIENT = genai.Client()
+# MODEL = 'gemini-2.5-flash-lite'
 
 
 # Retry helper for Gemini generate_content calls

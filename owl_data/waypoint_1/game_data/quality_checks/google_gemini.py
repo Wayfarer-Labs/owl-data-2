@@ -1,9 +1,16 @@
+import os
+import vertexai
 import base64, io
 import google.auth
 import google.auth.transport.requests
 from openai import OpenAI
+from google.auth.transport.requests import Request
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+from google.oauth2 import service_account
+
+load_dotenv()
 
 def _is_retryable_exception(e: Exception) -> bool:
     """Return True for transient errors like timeouts and HTTP 5xx."""
@@ -24,6 +31,13 @@ def _is_retryable_exception(e: Exception) -> bool:
         "service unavailable",
     ]
     return any(tok in msg for tok in retry_tokens)
+
+# credentials, project_id = google.auth.default(
+#     scopes=['https://www.googleapis.com/auth/aiplatform']
+# )
+
+# # Initialize Vertex AI with the project and the specific credentials
+# vertexai.init(project="openworld-main", credentials=credentials)
 
 
 def get_video_meta_from_bytes(mp4_bytes: bytes) -> dict:
@@ -51,75 +65,97 @@ def get_video_meta_from_bytes(mp4_bytes: bytes) -> dict:
     return {"fps": fps, "frames": frames, "duration_sec": duration_sec}
 
 
-
 class GoogleAuthOpenAI:
-    def __init__(self, location="us-central1"):
-        self.credentials, self.project_id = google.auth.default()
+    def __init__(self, project_id = 'openworld-main', location="us-central1"):
+        self.project_id = project_id
         self.location = location
-        self.token_expiry = None
+        self.token_expiry = datetime.now() + timedelta(hours=1)
+
+        # Define the necessary scope to access the Vertex AI API
+        scopes = ['https://www.googleapis.com/auth/cloud-platform']
+        
+        # Get the service account key path from the environment
+        key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not key_path:
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+
+        # --- CORRECTED AUTHENTICATION ---
+        # Create credentials that generate ACCESS TOKENS using the specified scopes.
+        # This is the type of credential the API is asking for.
+        self.credentials = service_account.Credentials.from_service_account_file(
+            key_path,
+            scopes=scopes
+        )
+        
         self.client = None
         self._refresh_client()
     
     def _refresh_client(self):
-        """Refresh the access token and recreate client."""
-        if not self.credentials.valid:
-            self.credentials.refresh(google.auth.transport.requests.Request())
-        
-        self.token_expiry = datetime.now() + timedelta(minutes=55)  # Refresh before 1hr
+        """Refresh the ID token and recreate the OpenAI client."""
+        # Use a request object to refresh the ID token
+        request = Request()
+        self.credentials.refresh(request)
+
         
         self.client = OpenAI(
-            base_url=f"https://aiplatform.googleapis.com/v1beta1/projects/{self.project_id}/locations/{self.location}/endpoints/openapi",
+            # --- CORRECTED LINE ---
+            # Added /endpoints/openapi to the end of the URL
+            base_url=f"https://{self.location}-aiplatform.googleapis.com/v1beta1/projects/{self.project_id}/locations/{self.location}/endpoints/openapi",
+            # Use the refreshed ID token as the API key
             api_key=self.credentials.token
+        )
+
+
+    # --- ADDED A SIMPLE CHAT METHOD FOR THE EXAMPLE ---
+    def chat_completion(self, model: str, messages: list):
+        """Handle text-based chat completions."""
+        # Refresh is handled by the OpenAI client library implicitly now
+        # by creating a new client if needed, but we can do it explicitly
+        self._refresh_client()
+        
+        return self.client.chat.completions.create(
+            model=model,
+            messages=messages
         )
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(6),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=20),
         retry=retry_if_exception(_is_retryable_exception),
     )
-    def responses_with_video(self, model: str, prompt: str, mp4_bytes: bytes, use_upload: bool = True):
+    def responses_with_video(self, model: str, prompt: str, mp4_bytes: bytes):
         """
-        Send prompt + video to Vertex's OpenAI-compatible 'responses' API.
-        - use_upload=True: upload bytes via Files API, then reference file_id (recommended for larger clips).
-        - use_upload=False: inline base64 video (only for small clips; request size limits apply).
+        Send prompt + video to Vertex's OpenAI-compatible API.
+        This version correctly uses the chat.completions endpoint for multimodal input.
         """
-        # Refresh token if needed
+        # Refresh client/token if necessary
         if datetime.now() >= self.token_expiry:
             self._refresh_client()
 
-        if use_upload:
-            # Upload bytes as a file and reference by file_id
-            file_obj = io.BytesIO(mp4_bytes)
-            # Provide a filename so the server knows the MIME
-            uploaded = self.client.files.create(
-                file=("clip.mp4", file_obj, "video/mp4"),
-                purpose="input"  # or "vision" depending on server; "input" works across providers
-            )
-            video_part = {
-                "type": "input_video",
-                "video": {"file_id": uploaded.id}
-            }
-        else:
-            # Inline base64 for small clips
-            b64 = base64.b64encode(mp4_bytes).decode("ascii")
-            video_part = {
-                "type": "input_video",
-                "video": {"data": b64, "format": "mp4"}
-            }
+        # Encode the video bytes into a base64 string
+        b64_video = base64.b64encode(mp4_bytes).decode("ascii")
 
-        # Use Responses API; chat.completions does not accept video content
-        return self.client.responses.create(
+        # Use the standard chat.completions endpoint, which supports multimodal content
+        return self.client.chat.completions.create(
             model=model,
-            input=[
+            messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": prompt},
-                        video_part,
+                        # Part 1: The text prompt
+                        {"type": "text", "text": prompt},
+                        # Part 2: The video data, formatted correctly for this endpoint
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:video/mp4;base64,{b64_video}"
+                            }
+                        }
                     ],
                 }
             ],
+            # This keyword is supported by the chat.completions.create method
             response_format={"type": "json_object"},
         )
 
@@ -206,14 +242,9 @@ class GoogleAuthOpenAI:
                 model="google/gemini-2.5-flash-lite",
                 prompt=prompt,
                 mp4_bytes=mp4_bytes,
-                use_upload=True,
             )
             # Responses API: text is typically in `output_text`; fall back to first text part if needed
-            raw = getattr(resp, "output_text", None)
-            if not raw:
-                out = getattr(resp, "output", None)
-                if out and len(out) and hasattr(out[0], "content") and len(out[0].content):
-                    raw = getattr(out[0].content[0], "text", None)
+            raw = resp.choices[0].message.content
             parsed = _parse_response(raw or "{}" , duration_sec)
             return parsed | {"error": None}
         except Exception as e:
@@ -246,14 +277,9 @@ class GoogleAuthOpenAI:
                 model="google/gemini-2.5-flash-lite",
                 prompt=prompt,
                 mp4_bytes=mp4_bytes,
-                use_upload=True,
             )
             # Responses API: text is typically in `output_text`; fall back to first text part if needed
-            raw = getattr(resp, "output_text", None)
-            if not raw:
-                out = getattr(resp, "output", None)
-                if out and len(out) and hasattr(out[0], "content") and len(out[0].content):
-                    raw = getattr(out[0].content[0], "text", None)
+            raw = resp.choices[0].message.content
             parsed = _parse_response(raw or "{}" )
             return parsed | {"error": None}
         except Exception as e:

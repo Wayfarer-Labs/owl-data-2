@@ -1,8 +1,9 @@
 resources:
+  image_id: docker.io/lapp0/owl-wm-cond:latest
   cloud: kubernetes
-  cpus: 64+
-  memory: 256+
-    
+  cpus: 31
+  memory: 131
+
 num_nodes: 8
 
 setup: |

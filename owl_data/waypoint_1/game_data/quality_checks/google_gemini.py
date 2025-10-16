@@ -261,13 +261,13 @@ class GoogleAuthOpenAI:
             crash or a recording malfunction.
 
             Output JSON ONLY, EXACTLY this schema:
-            {"is_darkness":<bool>,"reason":<str>}
-            If you found footage of a dark screen, output: {"is_darkness":True,"reason":"dark screen detected"}
-            If not, output: {"is_darkness":False,"reason":"<what you see on screen>"}
+            {"is_darkness":<bool>}
+            If you found footage of a dark screen, output: {"is_darkness":True}
+            If not, output: {"is_darkness":False}
         """
         import json, copy
         
-        EMPTY_RESPONSE = {"is_darkness": False, "reason": "No response from Gemini", "error": None}
+        EMPTY_RESPONSE = {"is_darkness": False, "error": None, "reason": None}
 
         def _parse_response(response: str) -> dict:
             return json.loads(response)
@@ -281,7 +281,7 @@ class GoogleAuthOpenAI:
             # Responses API: text is typically in `output_text`; fall back to first text part if needed
             raw = resp.choices[0].message.content
             parsed = _parse_response(raw or "{}" )
-            return parsed | {"error": None}
+            return parsed | {"error": None, "reason": None} # We set reason as none cause it was taking too long
         except Exception as e:
             import traceback as tb
             err = copy.deepcopy(EMPTY_RESPONSE)

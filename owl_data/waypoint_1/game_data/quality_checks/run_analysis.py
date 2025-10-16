@@ -23,8 +23,16 @@ BANNED_EXES = (
     'sh.exe'
 )
 
+import logging
+
+
 BANNED_EXES = tuple(exe.lower() for exe in BANNED_EXES)
 
+WRITE_LOG   = str(pathlib.Path('/mnt/data/sami/logs') / 'quality_checks.log')
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+LOGGER.addHandler(logging.StreamHandler())
+LOGGER.addHandler(logging.FileHandler(WRITE_LOG))
 
 BANNED_DATETIME_BEFORE = int(datetime(2025, 9, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp())
 
@@ -66,13 +74,14 @@ def run_checks(
         for check, value in quality_checks.items():
             if value is not None and value.get('error') is None:
                 _existing_checks.add((jsonl['tar_name'], jsonl['chunk_name'], check))
-
+    
+    LOGGER.info(f"Starting quality checks for {len(tasks)} tasks")
     for tar_path in tqdm.tqdm(tasks):
         row_default = {'tar_name': tar_path, 'chunk_name': None, 'quality_checks': {}, 'error': None}
         try:
             items = list(yield_ext_bytes_from_tars([DOWNSAMPLED_TARS_PATH / tar_path], '.mp4'))
             if not items:
-                print(f"No mp4 files found for {tar_path}")
+                LOGGER.info(f"No mp4 files found for {tar_path}")
                 continue
         
             tar_paths, mp4_names, mp4_bytes = zip(*items)
@@ -86,14 +95,14 @@ def run_checks(
 
                 if 'dark_screen' in checks:
                     if skip_existing and (tar_path, mp4_name, 'dark_screen') in _existing_checks:
-                        print(f"Skipping ({tar_path}, {mp4_name}, dark_screen) because it already exists")
+                        LOGGER.info(f"Skipping ({tar_path}, {mp4_name}, dark_screen) because it already exists")
                     else:
                         dark_screen = gemini.ask_dark_screen(mp4_bytes)
                         row['quality_checks']['dark_screen'] = dark_screen
             
                 if 'menus' in checks:
                     if skip_existing and (tar_path, mp4_name, 'menus') in _existing_checks:
-                        print(f"Skipping ({tar_path}, {mp4_name}, menus) because it already exists")
+                        LOGGER.info(f"Skipping ({tar_path}, {mp4_name}, menus) because it already exists")
                     else:
                         gemini_response_menus = gemini.ask_menus(mp4_bytes)
                         row['quality_checks']['menus'] = gemini_response_menus
@@ -103,7 +112,7 @@ def run_checks(
                     row['quality_checks']['banned_exes'] = {'is_banned': exe_name in BANNED_EXES, 'exe_name': exe_name, 'error': None}
 
                 if 'before_datetime' in checks:
-                    created_at = metadata_json.get('created_at', None)
+                    created_at = metadata_json.get('start_timestamp', None)
                     if created_at is None:
                         row['quality_checks']['before_datetime'] = {'is_before': None, 'created_at': None, 'threshold': None, 'error': "created_at is None"}
                     else:
@@ -117,15 +126,16 @@ def run_checks(
 
                 with open(out_path_jsonl, 'a') as f:
                     f.write(json.dumps(row) + '\n')
-                    print(f"Wrote {tar_path} {mp4_name} to {out_path_jsonl}")
+                    LOGGER.info(f"Wrote {tar_path} {mp4_name} to {out_path_jsonl}")
 
         except Exception as e:
             import traceback as tb
             row = copy.deepcopy(row_default)
             row['error'] = "".join(tb.format_exception(e))
+            LOGGER.exception(f"Error while processing {tar_path} {mp4_name}")
             with open(out_path_jsonl, 'a') as f:
                 f.write(json.dumps(row) + '\n')
-                print(f"ERROR: Wrote {tar_path} {mp4_name} to {out_path_jsonl}")
+                LOGGER.error(f"ERROR: Wrote {tar_path} {mp4_name} to {out_path_jsonl}")
 
         
 def run_checks_wrapper(args_tuple):
@@ -157,12 +167,15 @@ def main() -> int:
 
     args = p.parse_args()
 
+
     def _load_task_list(task_list_path: str) -> list[str]:
         with open(task_list_path, 'r') as f:
             return [line.strip() for line in f if line.strip()]
 
     tasks = _load_task_list(args.task_list)
+    LOGGER.info(f"Loaded {len(tasks)} tasks from {args.task_list}")
     local_tasks = [t for i, t in enumerate(tasks) if i % args.num_nodes == args.node_rank]
+    LOGGER.info(f"Loaded {len(local_tasks)} tasks for node {args.node_rank}")
 
 
     import multiprocessing
@@ -177,16 +190,18 @@ def main() -> int:
         return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n) if lst[i*k + min(i, m):(i+1)*k + min(i+1, m)]]
 
     task_chunks = chunkify(local_tasks, num_procs)
-
+    LOGGER.info(f"Chunked {len(local_tasks)} tasks into {len(task_chunks)} chunks")
     pool_args = [(chunk, args.out_path_jsonl, args.include_checks) for chunk in task_chunks]
-
+    LOGGER.info(f"Created {len(pool_args)} pool arguments")
     if num_procs == 1 or len(pool_args) == 1:
         # Run sequentially if only one process or one chunk
         [run_checks_wrapper(pool_args[0])]
+        LOGGER.info("Running sequentially")
     else:
+        LOGGER.info(f"Running in parallel with {num_procs} processes")
         with multiprocessing.get_context("spawn").Pool(num_procs) as pool:
             pool.map(run_checks_wrapper, pool_args)
-    
+
 
 if __name__ == "__main__":
     main()

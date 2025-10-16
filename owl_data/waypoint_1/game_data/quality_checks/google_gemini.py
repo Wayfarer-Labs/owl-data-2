@@ -15,8 +15,10 @@ load_dotenv()
 def _is_retryable_exception(e: Exception) -> bool:
     """Return True for transient errors like timeouts and HTTP 5xx."""
     status = getattr(e, "status", None) or getattr(e, "code", None)
-    if isinstance(status, int) and status in {500, 502, 503, 504}:
+
+    if isinstance(status, int) and status in {500, 502, 503, 504, 429}:
         return True
+
     msg = str(e).lower()
     retry_tokens = [
         "timeout",
@@ -27,6 +29,7 @@ def _is_retryable_exception(e: Exception) -> bool:
         "502",
         "503",
         "504",
+        'resource exhausted'
         "gateway timeout",
         "service unavailable",
     ]

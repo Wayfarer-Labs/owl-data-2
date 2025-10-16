@@ -150,7 +150,7 @@ def main() -> int:
         default='task_list.txt',
         help="Text file with one local path per line")
     p.add_argument("--out-path-jsonl", type=str, required=False,
-        default=os.path.join(QUALITY_CHECKS_JSONL_TAR, "quality_checks.jsonl"),
+        default=os.path.join(QUALITY_CHECKS_JSONL_TAR, "quality_checks_clean.jsonl"),
         help="Output prefix (local dir or s3://bucket/prefix)")
     p.add_argument("--num-workers", type=int,
         default= os.cpu_count() // 4,

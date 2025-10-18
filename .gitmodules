@@ -4,3 +4,6 @@
 [submodule "owl-vaes"]
 	path = owl-vaes
 	url = https://github.com/wayfarer-labs/owl-vaes
+[submodule "vace/DiffSynth-Studio"]
+	path = vace/DiffSynth-Studio
+	url = https://github.com/modelscope/DiffSynth-Studio.git

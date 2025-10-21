@@ -7,3 +7,6 @@
 [submodule "vace/DiffSynth-Studio"]
 	path = vace/DiffSynth-Studio
 	url = https://github.com/modelscope/DiffSynth-Studio.git
+[submodule "vace/Video-Depth-Anything"]
+	path = vace/Video-Depth-Anything
+	url = https://github.com/DepthAnything/Video-Depth-Anything.git

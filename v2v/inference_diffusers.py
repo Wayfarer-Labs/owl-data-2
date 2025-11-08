@@ -17,7 +17,7 @@ from video_depth_anything.video_depth import VideoDepthAnything
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.backends.cuda.matmul.allow_tf32 = True
-torch.set_float32_matmul.precision('high')
+torch.set_float32_matmul_precision('high')
 
 DEPTH_ENCODER = 'vitl'
 
@@ -256,7 +256,10 @@ def process_video_on_gpu(gpu_id, video_info_list, all_depths, all_frames, all_fp
 
 # Constants
 # prompt = "First-person perspective, realistic photorealistic footage, natural camera movement, real-world environment, cinematic lighting, high fidelity details, smooth motion, professional video quality, lifelike textures, authentic atmosphere"
-prompt = "First-person POV, GoPro footage style, handheld camera, natural shaky cam, real-world location, authentic lighting conditions, practical camera work, documentary style, raw unedited feel, bodycam perspective, action sports footage, parkour POV, extreme sports camera, chest mount perspective, helmet cam view, urban exploration, real life recording, amateur videography aesthetic, found footage style, dashcam quality, vlog camera movement, smartphone video quality, security camera realism, CCTV footage, livestream quality, unfiltered reality, natural color grading, real-world imperfections, authentic motion blur, actual camera physics, practical effects only, zero CGI, documentary filmmaking, cinema verite, observational camera, candid footage, street photography video, real location shoot, natural environment, outdoor lighting, overcast sky lighting, golden hour natural light, practical shadows, real-world reflections, authentic depth of field, camera operator visible, lens flare from real sun, dust particles in air, natural wind movement, realistic weather conditions, genuine human reactions, unscripted moments, real-time recording, continuous shot, long take, no cuts, diegetic sound only, environmental audio, real background noise"
+prompt = "First-person POV, GoPro footage style, handheld camera, natural shaky cam, real-world location, " \
+        "authentic lighting conditions, practical camera work, documentary style, raw unedited feel, bodycam perspective, " \
+        "action sports footage, parkour POV, extreme sports camera, chest mount perspective, helmet cam view, urban exploration, real life recording, amateur videography aesthetic, found footage style, dashcam quality, vlog camera movement, smartphone video quality, security camera realism, CCTV footage, livestream quality, unfiltered reality, natural color grading, real-world imperfections, authentic motion blur, actual camera physics, practical effects only, zero CGI, documentary filmmaking, cinema verite, observational camera, candid footage, street photography video, real location shoot, natural environment, outdoor lighting, overcast sky lighting, golden " \
+        "hour natural light, practical shadows, real-world reflections, authentic depth of field, camera operator visible, lens flare from real sun, dust particles in air, natural wind movement, realistic weather conditions, genuine human reactions, unscripted moments, real-time recording, continuous shot, long take, no cuts, diegetic sound only, environmental audio, real background noise"
 
 
 negative_prompt = "Gameplay, unrealistic, Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
@@ -295,7 +298,7 @@ if __name__ == "__main__":
         
         try:
             sampled_frames, fps = load_and_sample_frames(video_path, num_frames=num_frames, max_res=1280)
-            depths, fps = estimate_depth(depth_model, sampled_frames, fps, input_size=518, device=DEVICE)
+            depths, fps = estimate_depth(depth_model, sampled_frames, fps, input_size=512, device=DEVICE)
             
             all_depths[video_name] = depths
             all_frames[video_name] = sampled_frames

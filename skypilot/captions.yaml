@@ -1,0 +1,26 @@
+resources:
+  cloud: kubernetes
+  accelerators: H200:8
+  
+num_nodes: 5
+
+setup: |
+  sudo apt-get update
+  sudo apt-get install -y libgl1
+
+run: |
+  source /mnt/data/envs/.venv/bin/activate
+  cd /mnt/data/shahbuland
+  cd owl-data-2
+  PORT=$((8000 + ${SKYPILOT_NODE_RANK}))
+  bash owl_data/nn/launch_vllm_server.sh $PORT  > vllm_$PORT.log 2>&1 &
+  source deactivate
+  source /mnt/data/shahbuland/venv/bin/activate
+  python -m owl_data.waypoint_1.captions_from_tensors \
+      --root_dir /mnt/data/waypoint_1/data/egoexplore_360P \
+      --output_dir /mnt/data/waypoint_1/data_pt/egoexplore_360P \
+      --batch_size 8 \
+      --node_rank ${SKYPILOT_NODE_RANK} \
+      --num_nodes $SKYPILOT_NUM_NODES \
+      --port $PORT
+    

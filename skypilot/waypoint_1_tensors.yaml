@@ -1,0 +1,31 @@
+name: owl-cpu
+
+file_mounts:
+  /mnt/obj: {source: "nebius://mnt-obj", mode: MOUNT}  # Do not change the mount path
+
+num_nodes: 2
+
+setup: |
+  sudo apt-get update
+  sudo apt-get install -y libgl1 ffmpeg
+
+resources:
+  cloud: kubernetes
+  cpus: 64+
+  memory: 256+
+
+run: |
+  cd /mnt/data/shahbuland
+  source venv/bin/activate
+  cd owl-data-2
+  python -m owl_data.tensors_from_mp4s \
+    --root_dir /mnt/data/waypoint_1/datasets/ \
+    --output_dir /mnt/obj/datasets/waypoint_1_rgb/512px \
+    --chunk_size 2000 \
+    --output_size 512 512 \
+    --stride 1 \
+    --num_cpus 64 \
+    --num_nodes $SKYPILOT_NUM_NODES \
+    --node_rank ${SKYPILOT_NODE_RANK} \
+    --force_overwrite
+  

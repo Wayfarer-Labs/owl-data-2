@@ -9,10 +9,18 @@ class EncodingPipe:
         from owl_vaes import from_pretrained
 
         model = from_pretrained(cfg_path, ckpt_path)
-        model = model.encoder.eval().bfloat16().cuda()
-        self.model = torch.compile(model, mode='max-autotune', dynamic=False, fullgraph=True)
+        self.model = model.encoder.eval().bfloat16().cuda()
+        self.model = torch.compile(self.model, mode='max-autotune', dynamic=False, fullgraph=True)
 
         self.cached_shape = None
+    
+    def preprocess(self, x):
+        # Assume x is a cpu, mmap tensor slice from [b,c,h,w]
+        x = x.to(torch.float32) / 255.0
+        x = x * 2.0 - 1.0
+        x = x.bfloat16()
+        x = x.cuda(non_blocking=True)
+        return x
     
     @torch.no_grad()
     def __call__(self, x):
@@ -20,7 +28,7 @@ class EncodingPipe:
             self.cached_shape = x.shape
         else:
             assert x.shape == self.cached_shape, "Shape mismatch"
-
+        x = self.preprocess(x)
         return self.model(x).clone()
 
 class BatchedEncodingPipe:
@@ -33,7 +41,7 @@ class BatchedEncodingPipe:
         n = x.shape[0]
         batches = []
         for i in range(0, n, self.batch_size):
-            batch = x[i:i+self.batch_size]
+            batch = x[i:i+self.batch_size].contiguous()
             if batch.shape[0] < self.batch_size:
                 # Pad the last batch with zeros
                 pad_size = self.batch_size - batch.shape[0]
